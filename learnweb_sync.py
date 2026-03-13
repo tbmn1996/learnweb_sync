@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -39,7 +40,11 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 NOTION_COURSES_DB_ID = os.getenv("NOTION_COURSES_DB_ID", "")  # KurseLearnWeb-DB
 NOTION_LW_DB_ID = os.getenv("NOTION_LW_DB_ID", "")           # Learnweb Inhalte-DB
 NOTION_API = "https://api.notion.com/v1"
-CURRENT_SEMESTER = os.getenv("CURRENT_SEMESTER", "")          # z.B. "SoSe 26"
+CURRENT_SEMESTER = os.getenv("CURRENT_SEMESTER", "")          # z.B. "WS 25/26"
+
+# Mapping: Moodle-Shortname → Notion-Kurs-Select-Wert
+# Beispiel in .env: COURSE_MAP={"OR-2025_1": "OR", "FOF-2025_2": "FoF"}
+COURSE_MAP: dict[str, str] = json.loads(os.getenv("COURSE_MAP", "{}"))
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -522,25 +527,52 @@ def cmd_scan():
     print("=" * 60 + "\n")
 
 
-def _guess_kategorie(name: str) -> str | None:
+def _guess_kategorie(name: str) -> str:
     """
     Heuristik: Kategorie aus dem Aktivitätsnamen ableiten.
     Gibt einen der erlaubten Notion-Select-Werte zurück.
     """
     n = name.lower()
-    if any(k in n for k in ("vorlesung", "lecture", " vl ", "vl_", "vl.")):
+    # Vorlesung / Lecture
+    if any(k in n for k in ("vorlesung", "lecture", " vl ", "vl_", "vl.", "folie", "slides")):
         return "L Lecture"
-    if any(k in n for k in ("tutorial", "tutorium", "übung", "uebung", " ue ", "ue_")):
+    # Nummernpräfix à la "01 Einleitung", "02a Optimierung" → OR-Vorlesungsstil
+    if re.match(r"^\d{2}[a-z]?\s", n):
+        return "L Lecture"
+    # Tutorial / Übung
+    if any(k in n for k in ("tutorial", "tutorium", "übung", "uebung", " ue ", "ue_", "problem set", "exercise sheet")):
         return "T Tutorial"
-    if any(k in n for k in ("klausur", "exam", "prüfung", "pruefung")):
+    # Klausur / Exam
+    if any(k in n for k in ("klausur", "exam", "prüfung", "pruefung", "mock", "altklausur")):
         return "E Exam"
-    if any(k in n for k in ("python", ".ipynb", ".py")):
+    # Python / Notebook
+    if any(k in n for k in ("python", ".ipynb", ".py", "notebook", "jupyter")):
         return "P Python"
-    if any(k in n for k in ("aufgabe", "blatt", "sheet", "exercise", "hausaufgabe")):
+    # Aufgaben
+    if any(k in n for k in ("aufgabe", "blatt", "sheet", "exercise", "hausaufgabe", "problem set")):
         return "A Aufgabensammlung"
-    if any(k in n for k in ("skript", "script")):
+    # Skript / Mitschrift / Zusammenfassung
+    if any(k in n for k in ("skript", "script", "mitschrift", "zusammenfassung", "cheatsheet", "formula")):
         return "S Script"
     return "R Resource"
+
+
+def _guess_variante(name: str) -> str:
+    """
+    Heuristik: Variante aus dem Aktivitätsnamen ableiten.
+    Gibt einen der erlaubten Notion-Select-Werte zurück.
+    """
+    n = name.lower()
+    # Reihenfolge wichtig: Partial-Solution vor Solution prüfen
+    if any(k in n for k in ("partial-solution", "partial solution", "partly solution", "partial sol")):
+        return "Partial-Solution"
+    if any(k in n for k in ("solution", "lösung", "loesung", " sol ", "- sol", "answer")):
+        return "Solution"
+    if any(k in n for k in ("template", "vorlage")):
+        return "Template"
+    if any(k in n for k in ("annotated", "kommentiert", "mit anmerkungen")):
+        return "Annotated"
+    return "Original"
 
 
 def _guess_format(filename: str) -> str | None:
@@ -645,8 +677,15 @@ def notion_create_lw_page(
         "Name": {"title": [{"text": {"content": resource["name"]}}]},
         "Nr": {"rich_text": [{"text": {"content": resource["cmid"]}}]},
         "Kurs-ID": {"rich_text": [{"text": {"content": resource["course_id"]}}]},
-        "Variante": {"select": {"name": "Original"}},
+        "Variante": {"select": {"name": _guess_variante(resource["name"])}},
     }
+
+    # Kurs-Select aus COURSE_MAP (shortname → Notion-Kürzel, z.B. "OR-2025_1" → "OR")
+    course_shortname = resource.get("course_shortname", "")
+    if course_shortname and COURSE_MAP:
+        kurs_val = COURSE_MAP.get(course_shortname)
+        if kurs_val:
+            properties["Kurs"] = {"select": {"name": kurs_val}}
 
     # Kategorie per Heuristik
     kategorie = _guess_kategorie(resource["name"])
@@ -772,7 +811,13 @@ def cmd_push():
             log.warning(f"    Upload-Fehler: {e} – Seite wird ohne Datei angelegt")
 
         # ── Notion-Seite anlegen ───────────────────────────────────────────────
-        resource = {"cmid": cmid, "course_id": course_id, "name": name, "file_name": file_name}
+        resource = {
+            "cmid": cmid,
+            "course_id": course_id,
+            "name": name,
+            "file_name": file_name,
+            "course_shortname": course_map.get(course_id, {}).get("shortname", ""),
+        }
         try:
             notion_id = notion_create_lw_page(resource, upload_id, active.get(course_id))
         except Exception as e:
