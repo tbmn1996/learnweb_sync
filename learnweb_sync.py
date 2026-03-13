@@ -3,10 +3,11 @@
 learnweb_sync — Synchronizes LearnWeb (Moodle) content to Notion.
 
 Usage:
-    python learnweb_sync.py scan         # Scrape courses, record new activities
-    python learnweb_sync.py push         # Download new resources + create Notion pages [Phase 2]
+    python learnweb_sync.py sync-courses # Kurse in KurseLearnWeb prüfen / anlegen
+    python learnweb_sync.py scan         # Kurse scrapen, neue Aktivitäten im Manifest erfassen
+    python learnweb_sync.py push         # Neue Ressourcen herunterladen + Notion-Seiten anlegen [Phase 2]
     python learnweb_sync.py run          # scan + push [Phase 2]
-    python learnweb_sync.py export-zips  # Download all courses as ZIPs (backup mode)
+    python learnweb_sync.py export-zips  # Alle Kurse als ZIP-Backup herunterladen
 """
 
 import argparse
@@ -31,6 +32,12 @@ BASE_URL = os.environ["LEARNWEB_URL"].rstrip("/")
 USERNAME = os.environ["LEARNWEB_USERNAME"]
 PASSWORD = os.environ["LEARNWEB_PASSWORD"]
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "./downloads"))
+
+# Notion API
+NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
+NOTION_COURSES_DB_ID = os.getenv("NOTION_COURSES_DB_ID", "")  # KurseLearnWeb-DB
+NOTION_LW_DB_ID = os.getenv("NOTION_LW_DB_ID", "")           # Learnweb Inhalte-DB
+NOTION_API = "https://api.notion.com/v1"
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -60,21 +67,26 @@ def init_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS resources (
-            cmid        TEXT PRIMARY KEY,   -- Moodle course module ID (stable key)
-            course_id   TEXT NOT NULL,      -- e.g. "88671"
-            course_name TEXT NOT NULL,      -- e.g. "Informatik I WiSe 2025/26"
-            modtype     TEXT NOT NULL,      -- resource / forum / url / opencast / assign
-            name        TEXT NOT NULL,      -- activity display name
-            section     TEXT,               -- section name on course page
-            view_url    TEXT,               -- /mod/resource/view.php?id={cmid}
-            first_seen  TEXT NOT NULL,      -- ISO-8601 UTC
-            last_seen   TEXT NOT NULL,      -- ISO-8601 UTC
-            file_hash   TEXT,               -- MD5 of downloaded file (Phase 2)
-            file_name   TEXT,               -- original filename from server (Phase 2)
-            notion_id   TEXT,               -- Notion page ID after push (Phase 2)
-            status      TEXT DEFAULT 'new'  -- new / synced / error / removed
+            cmid             TEXT PRIMARY KEY,   -- Moodle course module ID (stable key)
+            course_id        TEXT NOT NULL,      -- e.g. "88671"
+            course_name      TEXT NOT NULL,      -- e.g. "Informatik I WiSe 2025/26"
+            course_shortname TEXT,               -- Moodle-Kürzel, e.g. "Inf1-2025_2"
+            modtype          TEXT NOT NULL,      -- resource / forum / url / opencast / assign
+            name             TEXT NOT NULL,      -- activity display name
+            section          TEXT,               -- section name on course page
+            view_url         TEXT,               -- /mod/resource/view.php?id={cmid}
+            first_seen       TEXT NOT NULL,      -- ISO-8601 UTC
+            last_seen        TEXT NOT NULL,      -- ISO-8601 UTC
+            file_hash        TEXT,               -- MD5 of downloaded file (Phase 2)
+            file_name        TEXT,               -- original filename from server (Phase 2)
+            notion_id        TEXT,               -- Notion page ID after push (Phase 2)
+            status           TEXT DEFAULT 'new'  -- new / synced / error / removed
         )
     """)
+    # Migration: course_shortname-Spalte zu bestehenden DBs hinzufügen (einmalig)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(resources)")}
+    if "course_shortname" not in existing:
+        conn.execute("ALTER TABLE resources ADD COLUMN course_shortname TEXT")
     conn.commit()
     return conn
 
@@ -99,14 +111,15 @@ def upsert_activity(conn: sqlite3.Connection, activity: dict) -> bool:
         conn.execute(
             """
             INSERT INTO resources
-                (cmid, course_id, course_name, modtype, name, section, view_url,
-                 first_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (cmid, course_id, course_name, course_shortname, modtype, name,
+                 section, view_url, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 activity["cmid"],
                 activity["course_id"],
                 activity["course_name"],
+                activity.get("course_shortname"),
                 activity["modtype"],
                 activity["name"],
                 activity["section"],
@@ -119,6 +132,20 @@ def upsert_activity(conn: sqlite3.Connection, activity: dict) -> bool:
 
 
 # ── LearnWeb scraping ─────────────────────────────────────────────────────────
+
+
+def _extract_shortname(soup: BeautifulSoup) -> str:
+    """
+    Extrahiert das Moodle-Kürzel aus dem Breadcrumb der Kursseite.
+    Beispiel: "Informatik I WiSe 2025/26" → "Informatik_I_WiSe_2025_26"
+    """
+    breadcrumb = soup.select("ol.breadcrumb li, nav[aria-label='Navigation bar'] li")
+    if breadcrumb:
+        shortname = breadcrumb[-1].get_text(strip=True)
+    else:
+        title = soup.find("title")
+        shortname = title.get_text(strip=True).split(":")[0].strip() if title else "UNKNOWN"
+    return re.sub(r"[^\w\-]", "_", shortname).strip("_")
 
 
 def login(session: requests.Session) -> bool:
@@ -179,11 +206,16 @@ def get_courses(session: requests.Session) -> list[dict]:
     return courses
 
 
-def get_course_activities(session: requests.Session, course: dict) -> list[dict]:
+def get_course_activities(
+    session: requests.Session, course: dict
+) -> tuple[str, list[dict]]:
     """
-    Scrape a course page and return all activities as a list of dicts.
+    Scrape a course page and return (shortname, activities).
 
-    The HTML structure is:
+    shortname: Moodle-Kürzel aus dem Breadcrumb (z.B. "Inf1-2025_2")
+    activities: Liste aller Aktivitäten auf der Seite
+
+    HTML-Struktur:
         <li class="section course-section" data-sectionname="Vorlesungsunterlagen">
           <ul data-for="cmlist">
             <li data-for="cmitem" data-id="3857603" class="activity resource modtype_resource">
@@ -194,11 +226,12 @@ def get_course_activities(session: requests.Session, course: dict) -> list[dict]
           </ul>
         </li>
 
-    Labels (modtype_label) are skipped – they are pure text/layout elements with no content.
+    Labels (modtype_label) werden übersprungen – reine Layout-Elemente ohne Inhalt.
     """
     resp = session.get(course["url"])
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
+    shortname = _extract_shortname(soup)
 
     activities = []
 
@@ -256,14 +289,179 @@ def get_course_activities(session: requests.Session, course: dict) -> list[dict]
                 }
             )
 
-    return activities
+    return shortname, activities
+
+
+# ── Notion API ────────────────────────────────────────────────────────────────
+
+
+def _notion_headers() -> dict:
+    """Standard-Header für alle Notion-API-Aufrufe."""
+    return {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+
+
+def notion_query_courses_db() -> dict[str, dict]:
+    """
+    Liest alle Einträge aus KurseLearnWeb (TESTING).
+    Gibt {lw_id: {"page_id": ..., "sync_content": bool, "url": ...}} zurück.
+    Paginierung wird automatisch behandelt (bis zu 100 Einträge pro Request).
+    """
+    all_pages = []
+    next_cursor = None
+
+    while True:
+        body: dict = {"page_size": 100}
+        if next_cursor:
+            body["start_cursor"] = next_cursor
+        resp = requests.post(
+            f"{NOTION_API}/databases/{NOTION_COURSES_DB_ID}/query",
+            headers=_notion_headers(),
+            json=body,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        all_pages.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        next_cursor = data.get("next_cursor")
+
+    result = {}
+    for page in all_pages:
+        props = page["properties"]
+        # LW-ID ist ein title-Feld (Liste von Text-Objekten)
+        lw_id = "".join(t["plain_text"] for t in props["LW-ID"]["title"])
+        result[lw_id] = {
+            "page_id": page["id"],
+            "sync_content": props["SyncContent"]["checkbox"],
+            "url": (props["URL"]["url"] or "") if props.get("URL") else "",
+        }
+    return result
+
+
+def notion_create_course(lw_id: str, course_url: str) -> str:
+    """
+    Legt einen neuen Kurs in KurseLearnWeb an.
+    SyncContent wird auf false gesetzt — Thomas aktiviert manuell.
+    Gibt die Notion Page-ID zurück.
+    """
+    resp = requests.post(
+        f"{NOTION_API}/pages",
+        headers=_notion_headers(),
+        json={
+            "parent": {"database_id": NOTION_COURSES_DB_ID},
+            "properties": {
+                "LW-ID": {"title": [{"text": {"content": lw_id}}]},
+                "URL": {"url": course_url},
+                "SyncContent": {"checkbox": False},
+            },
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()["id"]
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 
+def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]:
+    """
+    Gleicht alle belegten LearnWeb-Kurse mit der KurseLearnWeb-DB in Notion ab.
+    Fehlende Kurse werden neu angelegt (SyncContent=false).
+
+    Lädt jede Kursseite einmal und gibt zurück:
+        {course_id: {shortname, notion_page_id, sync_content, url, activities}}
+
+    Der Rückgabewert wird von cmd_scan() weiterverwendet (activities bereits gecacht).
+    """
+    if not NOTION_TOKEN:
+        log.error("NOTION_TOKEN nicht gesetzt – bitte in .env eintragen")
+        sys.exit(1)
+    if not NOTION_COURSES_DB_ID:
+        log.error("NOTION_COURSES_DB_ID nicht gesetzt – bitte in .env eintragen")
+        sys.exit(1)
+
+    # Wenn kein Session übergeben: eigenen Login durchführen (Standalone-Aufruf)
+    own_session = session is None
+    if own_session:
+        session = requests.Session()
+        session.headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+        if not login(session):
+            sys.exit(1)
+
+    courses = get_courses(session)
+    if not courses:
+        log.warning("Keine Kurse gefunden – korrekt eingeloggt?")
+        sys.exit(1)
+
+    # Bestehende Kurs-Einträge aus Notion holen
+    log.info("Lese KurseLearnWeb aus Notion...")
+    try:
+        notion_courses = notion_query_courses_db()
+    except Exception as e:
+        log.error(f"Notion-Abfrage fehlgeschlagen: {e}")
+        sys.exit(1)
+    log.info(f"  {len(notion_courses)} Kurs/Kurse bereits in Notion erfasst")
+
+    course_map: dict[str, dict] = {}
+    new_courses: list[str] = []
+
+    for course in courses:
+        log.info(f"Lade Kursseite: {course['name']}")
+        try:
+            shortname, activities = get_course_activities(session, course)
+        except Exception as e:
+            log.error(f"  Fehler beim Laden von {course['name']}: {e}")
+            continue
+
+        # Kurs in Notion anlegen falls noch nicht vorhanden
+        if shortname not in notion_courses:
+            log.info(f"  → Neuer Kurs: {shortname} – wird in Notion angelegt")
+            try:
+                page_id = notion_create_course(shortname, course["url"])
+                notion_courses[shortname] = {
+                    "page_id": page_id,
+                    "sync_content": False,
+                    "url": course["url"],
+                }
+                new_courses.append(shortname)
+            except Exception as e:
+                log.error(f"  Fehler beim Anlegen von {shortname}: {e}")
+                page_id = None
+        else:
+            page_id = notion_courses[shortname]["page_id"]
+
+        course_map[course["course_id"]] = {
+            "shortname": shortname,
+            "notion_page_id": page_id,
+            "sync_content": notion_courses.get(shortname, {}).get("sync_content", False),
+            "url": course["url"],
+            "activities": activities,  # gecacht – wird in cmd_scan() weiterverwendet
+        }
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    if new_courses:
+        print(f"✓ {len(new_courses)} neuer Kurs/Kurse in Notion angelegt:")
+        for name in new_courses:
+            print(f"    + {name}")
+    else:
+        print("✓ Alle Kurse bereits in Notion erfasst.")
+    sync_count = sum(1 for v in course_map.values() if v["sync_content"])
+    print(f"  {sync_count} von {len(course_map)} Kurs/Kursen haben SyncContent aktiviert.")
+    print("=" * 60 + "\n")
+
+    return course_map
+
+
 def cmd_scan():
-    """Scrape all courses and record new activities in the manifest."""
+    """
+    Kurse mit SyncContent=true scrapen und neue Aktivitäten im Manifest erfassen.
+    Führt zuerst sync-courses aus (prüft/legt Kurse in Notion an).
+    """
     conn = init_db()
     session = requests.Session()
     session.headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
@@ -271,35 +469,32 @@ def cmd_scan():
     if not login(session):
         sys.exit(1)
 
-    courses = get_courses(session)
-    if not courses:
-        log.warning("No courses found – are you logged in correctly?")
-        sys.exit(1)
+    # Schritt 1: Kurse in Notion synchronisieren, alle Seiten laden
+    course_map = cmd_sync_courses(session)
 
+    # Schritt 2: Nur Kurse mit SyncContent=true scannen
     total_new = 0
     new_by_course: dict[str, list] = {}
 
-    for course in courses:
-        log.info(f"Scanning: {course['name']}")
-        try:
-            activities = get_course_activities(session, course)
-        except Exception as e:
-            log.error(f"Error scraping {course['name']}: {e}")
+    for course_id, info in course_map.items():
+        if not info["sync_content"]:
+            log.info(f"Übersprungen (SyncContent=false): {info['shortname']}")
             continue
 
+        log.info(f"Scanne: {info['shortname']} ({len(info['activities'])} Aktivitäten)")
         new_in_course = []
-        for activity in activities:
+
+        for activity in info["activities"]:
+            activity["course_shortname"] = info["shortname"]
             is_new = upsert_activity(conn, activity)
             if is_new:
                 new_in_course.append(activity)
                 total_new += 1
 
         conn.commit()
-        log.info(
-            f"  {len(activities)} activities found, {len(new_in_course)} new"
-        )
+        log.info(f"  {len(new_in_course)} neue Aktivität(en)")
         if new_in_course:
-            new_by_course[course["name"]] = new_in_course
+            new_by_course[info["shortname"]] = new_in_course
 
     conn.close()
 
@@ -366,21 +561,7 @@ def _get_zip_info(session: requests.Session, course_url: str) -> dict | None:
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Shortname from breadcrumb or title
-    shortname = None
-    breadcrumb = soup.select(
-        "ol.breadcrumb li, nav[aria-label='Navigation bar'] li"
-    )
-    if breadcrumb:
-        last = breadcrumb[-1].get_text(strip=True)
-        if last:
-            shortname = last
-    if not shortname:
-        title = soup.find("title")
-        shortname = (
-            title.get_text(strip=True).split(":")[0].strip() if title else "UNKNOWN"
-        )
-    shortname = re.sub(r"[^\w\-]", "_", shortname).strip("_")
+    shortname = _extract_shortname(soup)
 
     dl_link = soup.find("a", href=re.compile(r"downloadcontent\.php\?contextid="))
     if not dl_link:
@@ -461,20 +642,22 @@ commands:
 """,
     )
     parser.add_argument(
-        "command", choices=["scan", "push", "run", "export-zips"]
+        "command", choices=["sync-courses", "scan", "push", "run", "export-zips"]
     )
     args = parser.parse_args()
 
     if not USERNAME or not PASSWORD:
-        log.error("LEARNWEB_USERNAME or LEARNWEB_PASSWORD not set in .env")
+        log.error("LEARNWEB_USERNAME oder LEARNWEB_PASSWORD nicht gesetzt in .env")
         sys.exit(1)
 
-    if args.command == "scan":
+    if args.command == "sync-courses":
+        cmd_sync_courses()  # standalone: loggt sich selbst ein
+    elif args.command == "scan":
         cmd_scan()
     elif args.command == "export-zips":
         cmd_export_zips()
     elif args.command in ("push", "run"):
-        print(f"'{args.command}' is not yet implemented — coming in Phase 2.")
+        print(f"'{args.command}' ist noch nicht implementiert – kommt in Phase 2.")
         sys.exit(0)
 
 
