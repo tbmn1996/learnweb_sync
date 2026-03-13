@@ -11,3 +11,6 @@ logs/
 *.sqlite3
 *.db
 *.tmp
+
+downloads/
+docs/example_course_source_code.html
