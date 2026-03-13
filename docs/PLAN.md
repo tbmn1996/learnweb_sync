@@ -156,8 +156,15 @@ CREATE TABLE IF NOT EXISTS resources (
 
 ### Notion-Integration
 
-**Zieldatenbank:** `Learnweb Inhalte`
+**Entwicklungsphase:** `Learnweb Inhalte (TESTING)`
+Notion DB-ID: `322bf244cadc806cbabbf39757c3e27f`
+Notion Data Source ID: `322bf244-cadc-81e9-8e37-000b3f6741fe`
+
+**Produktionsdatenbank (nach Abschluss der Tests):** `Learnweb Inhalte`
 Notion Collection ID: `321bf244-cadc-8075-a7b4-000b872536b0`
+
+> Während der Entwicklung (Phase 2) wird ausschließlich in die TESTING-DB geschrieben.
+> Umstieg auf Produktion erst nach expliziter Freigabe durch Thomas.
 
 **Feldmapping beim Anlegen einer neuen Seite:**
 
@@ -166,11 +173,14 @@ Notion Collection ID: `321bf244-cadc-8075-a7b4-000b872536b0`
 | `Name` | title | `data-activityname` aus HTML |
 | `Kurs` | select | course shortname → manuelle Mapping-Tabelle im `.env` oder Config |
 | `Kurs-ID` | text | `course_id` (z.B. "88671") |
-| `Kategorie` | select | Heuristik: Name enthält "Vorlesung"→L, "Tutorial/Tutorium"→T, "Exam/Klausur"→E, "Python"→P, sonst→R |
+| `Kategorie` | select | Heuristik: Name enthält "Vorlesung"/"Lecture"→`L Lecture`, "Tutorial/Tutorium"→`T Tutorial`, "Exam/Klausur"→`E Exam`, "Python"→`P Python`, "Aufgabe/Blatt"→`A Aufgabensammlung`, "Script/Skript"→`S Script`, sonst→`R Resource` |
 | `Format` | select | Dateiendung aus Content-Disposition (pdf/ipynb/py/pkl/zip) |
-| `Quell-Semester` | select | aus `.env`: `CURRENT_SEMESTER=WS 25/26` |
+| `Quell-Semester` | select | aus `.env`: `CURRENT_SEMESTER=SoSe 26` |
 | `LW Download` | file | file_upload_id nach Notion File Upload |
 | `Nr` | text | cmid (für spätere Deduplizierung / Referenz) |
+| `Variante` | select | Standard: `Original` (bei Push immer gesetzt) |
+| `Thema` | text | leer lassen (manuell oder per AI-Agent befüllen) |
+| `Course` | relation | leer lassen Phase 2; Phase 3+ via `KurseLearnWeb`-DB verknüpfen |
 
 **Notion File Upload Flow (2 Schritte):**
 
