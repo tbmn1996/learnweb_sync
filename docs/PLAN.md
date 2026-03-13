@@ -44,10 +44,11 @@ reagieren können (z.B. ein zukünftiger "LearnWeb Processor" Agent).
 Ein Python-CLI-Tool (`learnweb_sync.py`) mit folgenden Kommandos:
 
 ```
-python learnweb_sync.py scan         # Kurse scrapen, neue Inhalte im Manifest erfassen
-python learnweb_sync.py push         # Neue Manifest-Einträge → Datei laden + Notion-Seite anlegen
-python learnweb_sync.py run          # scan + push (Standard-Befehl für automatische Läufe)
-python learnweb_sync.py export-zips  # Backup: alle Kurse als ZIP herunterladen (bisheriger Code)
+python learnweb_sync.py sync-courses  # Kurse in KurseLearnWeb prüfen / anlegen
+python learnweb_sync.py scan          # Kurse mit SyncContent=true scrapen, neue Inhalte im Manifest erfassen
+python learnweb_sync.py push          # Neue Manifest-Einträge → Datei laden + Notion-Seite anlegen
+python learnweb_sync.py run           # sync-courses + scan + push (Standard für automatische Läufe)
+python learnweb_sync.py export-zips   # Backup: alle Kurse als ZIP herunterladen
 ```
 
 ---
@@ -91,7 +92,7 @@ python learnweb_sync.py export-zips  # Backup: alle Kurse als ZIP herunterladen 
          ▼
 [6. Notion-Seite anlegen]
          │  POST /v1/file_uploads  → file_upload_id
-         │  PUT  upload_url        → Datei hochladen (single_part ≤20MB)
+         │  POST upload_url        → Datei hochladen (single_part ≤20MB) ← POST nicht PUT!
          │  POST /v1/pages         → Seite in "Learnweb Inhalte" anlegen
          │                           mit file_upload_id in "LW Download"
          ▼
@@ -138,19 +139,20 @@ Abschnittsstruktur: `<div class="course-section-header">` mit `<span class="sect
 
 ```sql
 CREATE TABLE IF NOT EXISTS resources (
-    cmid        TEXT PRIMARY KEY,   -- Moodle course module ID, stabiler Schlüssel
-    course_id   TEXT NOT NULL,      -- z.B. "88671"
-    course_name TEXT NOT NULL,      -- z.B. "Informatik I -2025_2"
-    modtype     TEXT NOT NULL,      -- resource / forum / url / opencast / assign
-    name        TEXT NOT NULL,      -- data-activityname
-    section     TEXT,               -- Abschnittsname
-    view_url    TEXT,               -- /mod/resource/view.php?id={cmid}
-    first_seen  TEXT NOT NULL,      -- ISO-8601 UTC
-    last_seen   TEXT NOT NULL,      -- ISO-8601 UTC
-    file_hash   TEXT,               -- MD5 der heruntergeladenen Datei
-    file_name   TEXT,               -- originaler Dateiname
-    notion_id   TEXT,               -- Notion Page ID nach Push
-    status      TEXT DEFAULT 'new'  -- new / synced / error / removed
+    cmid             TEXT PRIMARY KEY,   -- Moodle course module ID, stabiler Schlüssel
+    course_id        TEXT NOT NULL,      -- z.B. "88671"
+    course_name      TEXT NOT NULL,      -- z.B. "Informatik I WiSe 2025/26"
+    course_shortname TEXT,               -- Breadcrumb-Kürzel, z.B. "Inf1-2025_2"
+    modtype          TEXT NOT NULL,      -- resource / forum / url / opencast / assign
+    name             TEXT NOT NULL,      -- data-activityname
+    section          TEXT,               -- Abschnittsname
+    view_url         TEXT,               -- /mod/resource/view.php?id={cmid}
+    first_seen       TEXT NOT NULL,      -- ISO-8601 UTC
+    last_seen        TEXT NOT NULL,      -- ISO-8601 UTC
+    file_hash        TEXT,               -- MD5 der heruntergeladenen Datei
+    file_name        TEXT,               -- originaler Dateiname
+    notion_id        TEXT,               -- Notion Page ID nach Push
+    status           TEXT DEFAULT 'new'  -- new / synced / error / removed
 );
 ```
 
@@ -180,7 +182,7 @@ Notion Collection ID: `321bf244-cadc-8075-a7b4-000b872536b0`
 | `Nr` | text | cmid (für spätere Deduplizierung / Referenz) |
 | `Variante` | select | Standard: `Original` (bei Push immer gesetzt) |
 | `Thema` | text | leer lassen (manuell oder per AI-Agent befüllen) |
-| `Course` | relation | leer lassen Phase 2; Phase 3+ via `KurseLearnWeb`-DB verknüpfen |
+| `KurseLearnWeb (TESTING)` | relation | Wird in Phase 2 aktiv befüllt (Notion Page-ID aus KurseLearnWeb) |
 
 **Notion File Upload Flow (2 Schritte):**
 
@@ -238,15 +240,23 @@ learnweb_sync/
 
 `.env.example`-Inhalt:
 ```
-LEARNWEB_URL=https://sso.uni-muenster.de/LearnWeb/learnweb2
+LEARNWEB_URL=https://www.uni-muenster.de/LearnWeb/learnweb2
 LEARNWEB_USERNAME=
 LEARNWEB_PASSWORD=
 NOTION_TOKEN=
-NOTION_LW_DB_ID=321bf244cadc804b9d3dd94cb2daaad7
-CURRENT_SEMESTER=SoSe 26
-# Optionales Kurs-Mapping (shortname → Notion-Select-Wert)
-# COURSE_MAP={"Informatik I -2025_2": "Inf1", "AFWFW-2025_2": "Ana"}
+# Learnweb Inhalte-DB (Testing: 322bf244..., Produktion: 321bf244cadc804b9d3dd94cb2daaad7)
+NOTION_LW_DB_ID=322bf244cadc806cbabbf39757c3e27f
+# KurseLearnWeb-DB (Testing: a44bf244..., Produktion: KurseLearnWeb Produktion)
+NOTION_COURSES_DB_ID=a44bf244cadc82669c11816719a8ec06
+CURRENT_SEMESTER=WS 25/26
+# Mapping: Moodle-Shortname → Notion-Kurs-Select-Wert
+# COURSE_MAP={"OR-2025_1": "OR", "FOF-2025_2": "FoF"}
+# Nur für export-zips benötigt:
+# DOWNLOAD_DIR=/path/to/downloads
 ```
+
+Abhaengigkeiten (`requirements.txt`): `requests`, `beautifulsoup4`, `python-dotenv`
+(kein `notion-client` — Notion REST API wird direkt via `requests` angesprochen).
 
 **Entscheidung:** Kein `src/`-Package, kein `pyproject.toml`. Ein einzelnes flaches Script,
 das für einen Nicht-Programmierer lesbar bleibt. Komplexität nur erhöhen wenn nötig.
@@ -359,20 +369,17 @@ Nach erfolgreichem Test von Phase 1 kann `learnweb_download.py` aus dem Repo ent
 2. **Nie lokal löschen** wenn etwas remote verschwindet — `status='removed'` setzen, nicht löschen.
 3. **Notion-Felder nie überschreiben** wenn `notion_id` bereits gesetzt ist. Nur neu befüllen.
 4. **Atomare Downloads** — erst in Temp-Datei (`downloads/tmp_{cmid}`), dann umbenennen.
-5. **`state.db` nie ins Git** — wird via GitHub Actions Artifact persistiert.
+5. **`state.db` nie ins main-Branch** — wird im separaten Git-Branch `state` persistiert (kein Ablaufdatum, versioniert). Artifacts würden nach 90 Tagen verfallen.
 6. **Organizer-Skill bleibt extern** — der bestehende Claude-Prompt für ZIP-Sortierung ist
    ein externer Post-Processor, kein Teil des Sync-Kerns. Die Grenze ist unveränderlich:
    Sync = remote→lokal/Notion. Organize = lokal→kuratiert. Diese Schichten nie vermischen.
 
 ---
 
-## Offene Punkte (zu klären bei Implementierung)
+## Offene Punkte / Entscheidungen
 
-- **Kurs-Mapping Config**: Wie wird `course shortname → Notion-Kurs-Select-Wert` konfiguriert?
-  Vorschlag: JSON in `.env`-Datei (manuell gepflegt, einmalig beim Setup).
-- **`state.db` bei GitHub Actions erster Run**: Kein Artefakt vorhanden →
-  `continue-on-error: true` in der download-Step, leere DB wird neu erstellt.
-- **Notion API Version**: Aktuell `2022-06-28` (letzte stabile); bei Bedarf auf `2026-03-11`
-  aktualisieren wenn File Upload API neuere Version erfordert.
-- **Benachrichtigung bei Fehlern**: GitHub Actions sendet bei Workflow-Failure automatisch
-  Email an Repository-Owner → kein zusätzlicher Notifier nötig.
+- ~~**Kurs-Mapping Config**~~ ✅ Gelöst: `COURSE_MAP` JSON in `.env`, manuell gepflegt.
+- ~~**`state.db` bei GitHub Actions erster Run**~~ ✅ Gelöst: Git-Branch `state`; `git show` schlägt beim ersten Run fehl → leere DB wird neu erstellt.
+- **Notion API Version**: Aktuell `2022-06-28` (letzte stabile); bei Bedarf aktualisieren.
+- **Benachrichtigung bei Fehlern**: GitHub Actions sendet bei Workflow-Failure automatisch Email an Repository-Owner → kein zusätzlicher Notifier nötig.
+- **Produktions-Switchover**: `NOTION_LW_DB_ID` + `NOTION_COURSES_DB_ID` auf Produktionswerte setzen, `COURSE_MAP` erweitern, vor Phase 3 lokal testen.

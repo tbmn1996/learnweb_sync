@@ -1,0 +1,74 @@
+name: LearnWeb Sync
+
+on:
+  schedule:
+    # Mo–Fr 06:00 UTC = 07:00 CET / 08:00 CEST
+    - cron: '0 6 * * 1-5'
+    # Optional: zweiter Run nachmittags (14:00 UTC = 15:00/16:00)
+    # - cron: '0 14 * * 1-5'
+  workflow_dispatch:  # Manueller Trigger per GitHub-UI (keine Parameter nötig)
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repo auschecken
+        uses: actions/checkout@v4
+
+      # ── state.db aus state-Branch laden ──────────────────────────────────────
+      # Der Branch "state" enthält nur die state.db-Datei (orphan branch, kein Code).
+      # Beim allerersten Run existiert der Branch noch nicht → Fehler wird ignoriert.
+      - name: state.db laden
+        run: |
+          git fetch origin state:refs/remotes/origin/state 2>/dev/null || true
+          git show origin/state:state.db > state.db 2>/dev/null \
+            && echo "state.db geladen ($(du -sh state.db | cut -f1))" \
+            || echo "Kein state-Branch gefunden – starte mit leerer DB"
+
+      # ── Python einrichten ─────────────────────────────────────────────────────
+      - name: Python 3.12 einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements.txt
+
+      # ── LearnWeb synchronisieren ──────────────────────────────────────────────
+      - name: LearnWeb synchronisieren
+        env:
+          LEARNWEB_URL: ${{ secrets.LEARNWEB_URL }}
+          LEARNWEB_USERNAME: ${{ secrets.LEARNWEB_USERNAME }}
+          LEARNWEB_PASSWORD: ${{ secrets.LEARNWEB_PASSWORD }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_LW_DB_ID: ${{ secrets.NOTION_LW_DB_ID }}
+          NOTION_COURSES_DB_ID: ${{ secrets.NOTION_COURSES_DB_ID }}
+          CURRENT_SEMESTER: ${{ secrets.CURRENT_SEMESTER }}
+          COURSE_MAP: ${{ secrets.COURSE_MAP }}
+        run: python learnweb_sync.py run
+
+      # ── state.db in state-Branch speichern ───────────────────────────────────
+      # Läuft auch bei Fehlern (if: always()), damit Teilfortschritt nicht verloren geht.
+      # Der state-Branch ist ein orphan-Branch, der nur state.db enthält (kein Code).
+      - name: state.db speichern
+        if: always()
+        run: |
+          # Git-Config für den Actions-Bot setzen
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Temporären Orphan-Branch erstellen der nur state.db enthält
+          git checkout --orphan state-update
+          git rm -rf . --quiet 2>/dev/null || true
+
+          # state.db in den neuen Branch kopieren (falls vorhanden)
+          if [ -f "$GITHUB_WORKSPACE/state.db" ]; then
+            cp "$GITHUB_WORKSPACE/state.db" state.db
+            git add state.db
+            git commit -m "state.db update $(date -u +%Y-%m-%dT%H:%M:%SZ) [$(git rev-parse --short HEAD 2>/dev/null || echo 'init')]"
+            git push -f origin state-update:state
+            echo "state.db erfolgreich in state-Branch gespeichert"
+          else
+            echo "Keine state.db gefunden – state-Branch nicht aktualisiert"
+          fi
