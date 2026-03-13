@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import os
 import re
 import sqlite3
@@ -38,6 +39,7 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 NOTION_COURSES_DB_ID = os.getenv("NOTION_COURSES_DB_ID", "")  # KurseLearnWeb-DB
 NOTION_LW_DB_ID = os.getenv("NOTION_LW_DB_ID", "")           # Learnweb Inhalte-DB
 NOTION_API = "https://api.notion.com/v1"
+CURRENT_SEMESTER = os.getenv("CURRENT_SEMESTER", "")          # z.B. "SoSe 26"
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -332,8 +334,10 @@ def notion_query_courses_db() -> dict[str, dict]:
     result = {}
     for page in all_pages:
         props = page["properties"]
-        # LW-ID ist ein title-Feld (Liste von Text-Objekten)
-        lw_id = "".join(t["plain_text"] for t in props["LW-ID"]["title"])
+        # LW-ID ist ein title-Feld — normieren wie _extract_shortname(), damit
+        # manuell angelegte Einträge (z.B. mit Leerzeichen) korrekt erkannt werden.
+        lw_id_raw = "".join(t["plain_text"] for t in props["LW-ID"]["title"])
+        lw_id = re.sub(r"[^\w\-]", "_", lw_id_raw).strip("_")
         result[lw_id] = {
             "page_id": page["id"],
             "sync_content": props["SyncContent"]["checkbox"],
@@ -491,6 +495,11 @@ def cmd_scan():
                 new_in_course.append(activity)
                 total_new += 1
 
+        # Bestehende Einträge ohne Shortname nachfüllen (Migration alter Daten)
+        conn.execute(
+            "UPDATE resources SET course_shortname = ? WHERE course_id = ? AND course_shortname IS NULL",
+            (info["shortname"], course_id),
+        )
         conn.commit()
         log.info(f"  {len(new_in_course)} neue Aktivität(en)")
         if new_in_course:
@@ -511,6 +520,296 @@ def cmd_scan():
                 section = f"  ({item['section']})" if item["section"] else ""
                 print(f"    + {tag}  {item['name']}{section}")
     print("=" * 60 + "\n")
+
+
+def _guess_kategorie(name: str) -> str | None:
+    """
+    Heuristik: Kategorie aus dem Aktivitätsnamen ableiten.
+    Gibt einen der erlaubten Notion-Select-Werte zurück.
+    """
+    n = name.lower()
+    if any(k in n for k in ("vorlesung", "lecture", " vl ", "vl_", "vl.")):
+        return "L Lecture"
+    if any(k in n for k in ("tutorial", "tutorium", "übung", "uebung", " ue ", "ue_")):
+        return "T Tutorial"
+    if any(k in n for k in ("klausur", "exam", "prüfung", "pruefung")):
+        return "E Exam"
+    if any(k in n for k in ("python", ".ipynb", ".py")):
+        return "P Python"
+    if any(k in n for k in ("aufgabe", "blatt", "sheet", "exercise", "hausaufgabe")):
+        return "A Aufgabensammlung"
+    if any(k in n for k in ("skript", "script")):
+        return "S Script"
+    return "R Resource"
+
+
+def _guess_format(filename: str) -> str | None:
+    """Dateiendung → Notion-Format-Select-Wert (oder None wenn unbekannt)."""
+    ext = Path(filename).suffix.lower().lstrip(".")
+    return ext if ext in {"pdf", "ipynb", "py", "pkl", "zip"} else None
+
+
+def _download_resource(
+    session: requests.Session, view_url: str
+) -> tuple[bytes, str] | None:
+    """
+    Lädt eine Moodle-Ressource herunter.
+    Gibt (file_bytes, filename) zurück, oder None bei Fehler.
+
+    Ablauf:
+      1. GET view_url → folgt Redirects
+      2. Falls Antwort HTML: pluginfile.php-Link aus dem Seiteninhalt extrahieren
+      3. Dateiname aus Content-Disposition oder URL-Pfad ableiten
+    """
+    resp = session.get(view_url, allow_redirects=True, stream=True, timeout=60)
+    resp.raise_for_status()
+
+    # Falls die Seite HTML zurückgibt, echten Download-Link suchen
+    if "text/html" in resp.headers.get("Content-Type", ""):
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
+        # Moodle-typischer Download-Link (pluginfile.php)
+        dl_link = soup.find("a", href=re.compile(r"pluginfile\.php"))
+        if not dl_link:
+            dl_link = soup.find("a", href=re.compile(r"forcedownload"))
+        if not dl_link:
+            log.warning(f"Kein Download-Link in HTML-Seite: {view_url}")
+            return None
+        file_url = dl_link["href"]
+        if not file_url.startswith("http"):
+            file_url = BASE_URL + file_url
+        resp = session.get(file_url, allow_redirects=True, stream=True, timeout=60)
+        resp.raise_for_status()
+
+    # Dateiname aus Content-Disposition extrahieren
+    cd = resp.headers.get("Content-Disposition", "")
+    m = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", cd, re.IGNORECASE)
+    if m:
+        filename = m.group(1).strip().strip("\"'")
+    else:
+        # Fallback: letztes Segment der finalen URL
+        url_path = resp.url.split("?")[0].rstrip("/")
+        filename = url_path.split("/")[-1] or "download.bin"
+
+    file_bytes = b"".join(resp.iter_content(chunk_size=256 * 1024))
+    return file_bytes, filename
+
+
+def notion_upload_file(file_bytes: bytes, filename: str) -> str | None:
+    """
+    Lädt eine Datei über die Notion File Upload API hoch (single_part, max 20 MB).
+    Gibt die file_upload_id zurück, oder None bei Überschreitung des Größenlimits.
+    """
+    MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+    if len(file_bytes) > MAX_BYTES:
+        log.warning(
+            f"Datei zu groß ({len(file_bytes) / 1024 / 1024:.1f} MB) – kein Upload: {filename}"
+        )
+        return None
+
+    # Datei-Typ ermitteln
+    ext = Path(filename).suffix.lower()
+    content_type = "application/pdf" if ext == ".pdf" else "application/octet-stream"
+
+    # Schritt 1: Upload-Objekt erstellen
+    resp = requests.post(
+        f"{NOTION_API}/file_uploads",
+        headers={"Authorization": f"Bearer {NOTION_TOKEN}", "Notion-Version": "2022-06-28"},
+        json={"mode": "single_part", "content_type": content_type},
+    )
+    resp.raise_for_status()
+    upload_id = resp.json()["id"]
+    upload_url = resp.json()["upload_url"]
+
+    # Schritt 2: Datei hochladen — POST (nicht PUT!) + Notion-Version Header erforderlich
+    resp2 = requests.post(
+        upload_url,
+        headers={"Authorization": f"Bearer {NOTION_TOKEN}", "Notion-Version": "2022-06-28"},
+        files={"file": (filename, file_bytes, content_type)},
+    )
+    resp2.raise_for_status()
+
+    return upload_id
+
+
+def notion_create_lw_page(
+    resource: dict,
+    file_upload_id: str | None,
+    course_notion_page_id: str | None,
+) -> str:
+    """
+    Legt eine neue Seite in Learnweb Inhalte (TESTING) an.
+    Gibt die Notion page_id zurück.
+    """
+    properties: dict = {
+        "Name": {"title": [{"text": {"content": resource["name"]}}]},
+        "Nr": {"rich_text": [{"text": {"content": resource["cmid"]}}]},
+        "Kurs-ID": {"rich_text": [{"text": {"content": resource["course_id"]}}]},
+        "Variante": {"select": {"name": "Original"}},
+    }
+
+    # Kategorie per Heuristik
+    kategorie = _guess_kategorie(resource["name"])
+    if kategorie:
+        properties["Kategorie"] = {"select": {"name": kategorie}}
+
+    # Format aus Dateinamen
+    if resource.get("file_name"):
+        fmt = _guess_format(resource["file_name"])
+        if fmt:
+            properties["Format"] = {"select": {"name": fmt}}
+
+    # Quell-Semester aus .env
+    if CURRENT_SEMESTER:
+        properties["Quell-Semester"] = {"select": {"name": CURRENT_SEMESTER}}
+
+    # Datei-Anhang (falls hochgeladen)
+    if file_upload_id:
+        properties["LW Download"] = {
+            "files": [{"type": "file_upload", "file_upload": {"id": file_upload_id}}]
+        }
+
+    # Relation zu KurseLearnWeb (TESTING)
+    if course_notion_page_id:
+        properties["KurseLearnWeb (TESTING)"] = {
+            "relation": [{"id": course_notion_page_id}]
+        }
+
+    resp = requests.post(
+        f"{NOTION_API}/pages",
+        headers=_notion_headers(),
+        json={"parent": {"database_id": NOTION_LW_DB_ID}, "properties": properties},
+    )
+    resp.raise_for_status()
+    return resp.json()["id"]
+
+
+def cmd_push():
+    """
+    Phase 2: Neue Ressourcen aus dem Manifest herunterladen und als Notion-Seiten anlegen.
+    Verarbeitet nur Einträge mit notion_id IS NULL und modtype='resource'
+    aus Kursen mit SyncContent=true.
+    """
+    if not NOTION_TOKEN:
+        log.error("NOTION_TOKEN nicht gesetzt")
+        sys.exit(1)
+    if not NOTION_LW_DB_ID:
+        log.error("NOTION_LW_DB_ID nicht gesetzt")
+        sys.exit(1)
+
+    session = requests.Session()
+    session.headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+    if not login(session):
+        sys.exit(1)
+
+    # Kursliste + KurseLearnWeb-Abgleich (enthält notion_page_id pro Kurs)
+    course_map = cmd_sync_courses(session)
+
+    # Nur aktive Kurse (SyncContent=true) → {course_id: notion_page_id}
+    active = {
+        cid: info["notion_page_id"]
+        for cid, info in course_map.items()
+        if info["sync_content"]
+    }
+    if not active:
+        log.warning("Keine Kurse mit SyncContent=true – nichts zu pushen.")
+        return
+
+    conn = init_db()
+    downloads_dir = Path(__file__).parent / "downloads"
+    downloads_dir.mkdir(exist_ok=True)
+
+    # Alle noch nicht gepushten Ressourcen der aktiven Kurse
+    placeholders = ",".join("?" * len(active))
+    rows = conn.execute(
+        f"""
+        SELECT cmid, course_id, name, view_url
+        FROM resources
+        WHERE modtype = 'resource'
+          AND notion_id IS NULL
+          AND course_id IN ({placeholders})
+        ORDER BY course_id, first_seen
+        """,
+        list(active.keys()),
+    ).fetchall()
+
+    if not rows:
+        print("\n✓ Nichts zu pushen – alle Ressourcen bereits in Notion.\n")
+        conn.close()
+        return
+
+    log.info(f"{len(rows)} Ressource(n) zum Pushen.")
+    pushed, no_file, errors = 0, 0, 0
+
+    for cmid, course_id, name, view_url in rows:
+        log.info(f"  Push: {name} (cmid={cmid})")
+
+        # ── Datei herunterladen ────────────────────────────────────────────────
+        try:
+            result = _download_resource(session, view_url)
+        except Exception as e:
+            log.error(f"    Download-Fehler: {e}")
+            conn.execute("UPDATE resources SET status = 'error' WHERE cmid = ?", (cmid,))
+            conn.commit()
+            errors += 1
+            continue
+
+        if result is None:
+            log.error(f"    Kein Download möglich – übersprungen: {name}")
+            conn.execute("UPDATE resources SET status = 'error' WHERE cmid = ?", (cmid,))
+            conn.commit()
+            errors += 1
+            continue
+
+        file_bytes, file_name = result
+        file_hash = hashlib.md5(file_bytes).hexdigest()
+
+        # ── Notion File Upload ─────────────────────────────────────────────────
+        upload_id = None
+        try:
+            upload_id = notion_upload_file(file_bytes, file_name)
+        except Exception as e:
+            log.warning(f"    Upload-Fehler: {e} – Seite wird ohne Datei angelegt")
+
+        # ── Notion-Seite anlegen ───────────────────────────────────────────────
+        resource = {"cmid": cmid, "course_id": course_id, "name": name, "file_name": file_name}
+        try:
+            notion_id = notion_create_lw_page(resource, upload_id, active.get(course_id))
+        except Exception as e:
+            log.error(f"    Notion-Fehler: {e}")
+            conn.execute(
+                "UPDATE resources SET status = 'error', file_name = ? WHERE cmid = ?",
+                (file_name, cmid),
+            )
+            conn.commit()
+            errors += 1
+            continue
+
+        # ── Manifest aktualisieren ─────────────────────────────────────────────
+        conn.execute(
+            "UPDATE resources SET notion_id = ?, file_name = ?, file_hash = ?, status = 'synced' WHERE cmid = ?",
+            (notion_id, file_name, file_hash, cmid),
+        )
+        conn.commit()
+
+        if upload_id:
+            pushed += 1
+            log.info(f"    ✓ Mit Datei angelegt")
+        else:
+            no_file += 1
+            log.info(f"    ✓ Ohne Datei angelegt (>20 MB oder Upload-Fehler)")
+
+    conn.close()
+
+    print("\n" + "=" * 60)
+    print(f"✓ Push: {pushed} mit Datei, {no_file} ohne Datei, {errors} Fehler")
+    print("=" * 60 + "\n")
+
+
+def cmd_run():
+    """scan + push in einem Schritt (Standard für automatische Läufe)."""
+    cmd_scan()
+    cmd_push()
 
 
 def cmd_export_zips():
@@ -651,14 +950,15 @@ commands:
         sys.exit(1)
 
     if args.command == "sync-courses":
-        cmd_sync_courses()  # standalone: loggt sich selbst ein
+        cmd_sync_courses()
     elif args.command == "scan":
         cmd_scan()
+    elif args.command == "push":
+        cmd_push()
+    elif args.command == "run":
+        cmd_run()
     elif args.command == "export-zips":
         cmd_export_zips()
-    elif args.command in ("push", "run"):
-        print(f"'{args.command}' ist noch nicht implementiert – kommt in Phase 2.")
-        sys.exit(0)
 
 
 if __name__ == "__main__":
