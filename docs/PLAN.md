@@ -195,11 +195,12 @@ resp = requests.post(
 upload_id = resp.json()["id"]
 upload_url = resp.json()["upload_url"]
 
-# Schritt 2: Datei hochladen
+# Schritt 2: Datei hochladen (POST, nicht PUT! + Notion-Version Header erforderlich)
 with open(tmp_file, "rb") as f:
-    requests.put(upload_url,
-                 headers={"Authorization": f"Bearer {NOTION_TOKEN}"},
-                 files={"file": (filename, f, "application/pdf")})
+    requests.post(upload_url,
+                  headers={"Authorization": f"Bearer {NOTION_TOKEN}",
+                           "Notion-Version": "2022-06-28"},
+                  files={"file": (filename, f, "application/pdf")})
 
 # Schritt 3: Seite anlegen mit Referenz auf file_upload_id
 properties["LW Download"] = {
@@ -254,38 +255,44 @@ das für einen Nicht-Programmierer lesbar bleibt. Komplexität nur erhöhen wenn
 
 ## Entwicklungsphasen
 
-### Phase 1 — Scraper + Manifest ← **jetzt bauen**
+### Phase 1 — Scraper + Manifest ✅ ABGESCHLOSSEN
 
 **Ziel:** Lokaler Lauf erkennt alle Aktivitäten in allen Kursen und zeigt welche neu sind.
-Kein Download, kein Notion, kein GitHub Actions.
 
 Deliverables:
-- `learnweb_sync.py` mit `scan`-Kommando
-- Login + Kursliste aus bestehendem `learnweb_download.py` übernommen
-- BeautifulSoup-Parser für `<li data-for="cmitem">` auf Kursseiten
-- SQLite-Manifest (`state.db`) mit Vergleichslogik
-- Konsolen-Output: "3 neue Ressourcen in Kurs Informatik I gefunden: [Vorlesung 6, ...]"
-- Bestehender ZIP-Export-Code als `export-zips` erhalten
+- `learnweb_sync.py` mit `scan`-Kommando ✅
+- Login + Kursliste aus bestehendem `learnweb_download.py` übernommen ✅
+- BeautifulSoup-Parser für `<li data-for="cmitem">` auf Kursseiten ✅
+- SQLite-Manifest (`state.db`) mit Vergleichslogik ✅
+- `sync-courses`-Kommando: KurseLearnWeb (TESTING) in Notion befüllen ✅
 
-Erfolgskriterium: `python learnweb_sync.py scan` läuft durch, gibt sauber neue Items aus.
-
-### Phase 2 — Datei-Download + Notion-Push
+### Phase 2 — Datei-Download + Notion-Push ✅ ABGESCHLOSSEN
 
 **Ziel:** Neue `modtype_resource`-Einträge automatisch in Notion anlegen.
 
 Deliverables:
-- `push`-Kommando: lädt Datei herunter → Notion File Upload API → Seite anlegen
-- `run`-Kommando: `scan` + `push` in einem Schritt
-- Fehlerbehandlung: >20MB oder Download-Fehler → Seite ohne Datei anlegen, `status='error'`
-- Deduplizierung: wenn `cmid` bereits `notion_id` hat → überspringen
+- `push`-Kommando: lädt Datei herunter → Notion File Upload API → Seite anlegen ✅
+- `run`-Kommando: `scan` + `push` in einem Schritt ✅
+- Fehlerbehandlung: >20MB oder Download-Fehler → Seite ohne Datei anlegen, `status='error'` ✅
+- Deduplizierung: wenn `cmid` bereits `notion_id` hat → überspringen ✅
+- `COURSE_MAP` JSON-Env-Variable: shortname → Kurs-Select-Wert ✅
+- `_guess_variante()`: Solution / Partial-Solution / Template / Annotated / Original ✅
+- `_guess_kategorie()`: erweiterte Heuristik mit nummerierten Präfixen, mock, mitschrift ✅
 
-### Phase 3 — GitHub Actions Automation
+**Testergebnis (TESTING DB, WS 25/26):** 91 Ressourcen, 0 Fehler, Kurs 100 %, R Resource 35 %.
+
+**Hinweis Notion File Upload API:** Schritt 2 muss `POST` (nicht `PUT`) auf `upload_url` sein,
+mit `Notion-Version: 2022-06-28` Header und `files={"file": (filename, bytes, content_type)}`.
+
+### Phase 3 — GitHub Actions Automation ← **als nächstes**
 
 **Ziel:** Täglicher automatischer Lauf ohne manuelle Intervention.
+**Voraussetzung:** Produktions-Switchover (NOTION_LW_DB_ID + NOTION_COURSES_DB_ID auf Produktion setzen).
 
 Deliverables:
 - `.github/workflows/sync.yml`
-- Secrets: `LEARNWEB_USERNAME`, `LEARNWEB_PASSWORD`, `NOTION_TOKEN`
+- Secrets im GitHub Repo: `LEARNWEB_USERNAME`, `LEARNWEB_PASSWORD`, `NOTION_TOKEN`,
+  `NOTION_LW_DB_ID`, `NOTION_COURSES_DB_ID`, `CURRENT_SEMESTER`, `COURSE_MAP`
 - `state.db`-Persistenz via Artifacts:
   ```yaml
   - uses: actions/download-artifact@v4        # Manifest vom letzten Run laden
@@ -293,9 +300,15 @@ Deliverables:
     continue-on-error: true                   # beim allerersten Run kein Artefakt vorhanden
   - run: python learnweb_sync.py run
   - uses: actions/upload-artifact@v4          # Manifest für nächsten Run speichern
-    with: {name: state-db, path: state.db}
+    with: {name: state-db, path: state.db, retention-days: 90}
   ```
 - `workflow_dispatch` ohne Parameter → manueller Trigger per GitHub-UI
+- Cron: `0 6 * * 1-5` (Mo–Fr 06:00 UTC = 07:00/08:00 MEZ/MESZ)
+
+**Produktions-Switchover (vor Phase 3):**
+- `NOTION_LW_DB_ID` → `321bf244cadc804b9d3dd94cb2daaad7` (Learnweb Inhalte Produktion)
+- `NOTION_COURSES_DB_ID` → KurseLearnWeb Produktion (Collection `321bf244-cadc-80db-b799-000bec418f90`)
+- `COURSE_MAP` um alle aktiven Kurse erweitern
 
 ### Phase 4 — Notion-Button Trigger (optional)
 
