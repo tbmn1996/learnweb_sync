@@ -54,28 +54,37 @@ except json.JSONDecodeError as e:
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-log_dir = Path(__file__).parent / "logs"
-log_dir.mkdir(exist_ok=True)
-log_file = log_dir / f"{datetime.now():%Y%m%d_%H%M%S}.log"
+# Standardmäßig nur stdout – kein File-Handler, damit der Import keine
+# Log-Dateien erzeugt wenn das Skript als Subprozess (z.B. von server.py)
+# oder in einer Umgebung ohne schreibbares Dateisystem läuft.
+# LOG_DIR setzen um zusätzlich in eine Datei zu schreiben (lokal nützlich).
+_log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+_log_dir_env = os.getenv("LOG_DIR")
+if _log_dir_env:
+    _log_dir = Path(_log_dir_env)
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _log_file = _log_dir / f"{datetime.now():%Y%m%d_%H%M%S}.log"
+    _log_handlers.append(logging.FileHandler(_log_file))
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger(__name__)
 
 
 # ── Database (SQLite manifest) ────────────────────────────────────────────────
 
-DB_PATH = Path(__file__).parent / "state.db"
+# STATE_DB_PATH aus Env lesen; lokal bleibt der Default neben dem Skript,
+# auf Railway zeigt die Variable auf /data/state.db (persistentes Volume).
+DB_PATH = Path(os.getenv("STATE_DB_PATH", str(Path(__file__).parent / "state.db")))
 
 
 def init_db() -> sqlite3.Connection:
     """Open (or create) the manifest database and return a connection."""
+    # Elternverzeichnis anlegen falls nötig (z.B. /data auf Railway beim ersten Start).
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS resources (

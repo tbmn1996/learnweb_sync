@@ -1,0 +1,15 @@
+[build]
+builder = "RAILPACK"
+
+[deploy]
+# Genau ein Worker: verhindert mehrere APScheduler-Instanzen.
+# Vier Threads: ausreichend für Webhook-Requests während laufendem Sync.
+startCommand = "gunicorn server:app --workers 1 --threads 4 --bind 0.0.0.0:$PORT"
+
+# /health wird als Deploy-Gate genutzt: Railway wartet bis zu 300s auf 200.
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+
+# Bei Prozessende mit non-zero exit (z.B. FAILURE_THRESH erreicht) neu starten.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

@@ -19,7 +19,39 @@ gesucht, weil unklar ist ob sie existieren.
 
 **Das Ziel:** LearnWeb-Inhalte automatisch erkennen wenn sie neu sind und als Notion-Seiten mit
 PDF-Anhang in `Learnweb Inhalte` eintragen — so dass Notion AI und Custom Agents darauf
-reagieren können (z.B. ein zukünftiger "LearnWeb Processor" Agent).
+reagieren können.
+
+---
+
+## Betriebsmodell
+
+**Primär: Railway-Service**
+
+Der Service läuft dauerhaft auf Railway. Ein interner APScheduler (Mo–Fr 06:00 UTC) startet
+den Sync automatisch. `state.db` liegt auf einem persistenten Railway-Volume unter `/data`.
+
+```
+[APScheduler intern, Mo–Fr 06:00 UTC]  |  [POST /webhook/sync, manuell]
+                    │                                    │
+                    └──────────────┬─────────────────────┘
+                                   ▼
+                        [server.py — Railway-Orchestrator]
+                          threading.Lock (in-process Guard)
+                          fcntl.flock (prozessübergreifend)
+                                   │
+                                   ▼
+                        [Subprozess: learnweb_sync.py run]
+                                   │
+                    ┌──────────────▼─────────────────────┐
+                    │           state.db                  │
+                    │     (/data — Railway-Volume)         │
+                    └─────────────────────────────────────┘
+```
+
+**Fallback: GitHub Actions `workflow_dispatch`**
+
+Ruft per `curl` den Railway-Webhook auf. Führt kein eigenes Python aus, schreibt nicht in
+`state.db`. Dient als Operator-Trigger wenn Railway manuell gestartet werden soll.
 
 ---
 
@@ -28,14 +60,12 @@ reagieren können (z.B. ein zukünftiger "LearnWeb Processor" Agent).
 | Frage | Ergebnis |
 |-------|----------|
 | Moodle Web Service API | ❌ Nicht verfügbar (404 auf `/webservice/rest/server.php`) |
-| `/my/` Dashboard | ❌ 404, aber `/my/index.php` ✅ (bestehender Login-Code nutzt das bereits) |
-| Letzte-Aktivitäten-Block | ❌ Nicht vorhanden |
+| `/my/` Dashboard | ❌ 404, aber `/my/index.php` ✅ |
 | HTML-Struktur Kursseiten | ✅ Bekannt, stabil, gut parsebar |
-| Kursseiten-Zugriff per Session | ✅ Bestehender Code beweist es |
-| Datei-Download per Session | ✅ Gleicher Mechanismus wie ZIP-Download (requests.Session mit Cookies) |
+| Datei-Download per Session | ✅ requests.Session mit Cookies |
 | Notion File Upload API | ✅ Vorhanden (`POST /v1/file_uploads`, bis 20MB single_part) |
-| Notion Webhook Button | ✅ Kann POST an beliebige URL senden |
-| Eigener Server | ❌ Nicht vorhanden → GitHub Actions als Ausführungsumgebung |
+| Railway Volume (SQLite) | ✅ Persistenter Speicher unter `/data`, Single-Replica |
+| Railway Multi-Replica + Volume | ❌ Nicht kombinierbar — Single-Replica ist Voraussetzung |
 
 ---
 
@@ -45,11 +75,14 @@ Ein Python-CLI-Tool (`learnweb_sync.py`) mit folgenden Kommandos:
 
 ```
 python learnweb_sync.py sync-courses  # Kurse in KurseLearnWeb prüfen / anlegen
-python learnweb_sync.py scan          # Kurse mit SyncContent=true scrapen, neue Inhalte im Manifest erfassen
-python learnweb_sync.py push          # Neue Manifest-Einträge → Datei laden + Notion-Seite anlegen
-python learnweb_sync.py run           # sync-courses + scan + push (Standard für automatische Läufe)
+python learnweb_sync.py scan          # Kurse mit SyncContent=true scrapen
+python learnweb_sync.py push          # Neue Manifest-Einträge → Notion-Seite anlegen
+python learnweb_sync.py run           # sync-courses + scan + push
 python learnweb_sync.py export-zips   # Backup: alle Kurse als ZIP herunterladen
 ```
+
+Der produktive Einstiegspunkt auf Railway ist `server.py` (Flask + APScheduler), das
+`learnweb_sync.py run` als Subprozess startet.
 
 ---
 
@@ -58,51 +91,39 @@ python learnweb_sync.py export-zips   # Backup: alle Kurse als ZIP herunterladen
 ### Gesamtdatenfluss
 
 ```
-[GitHub Actions, täglich 06:00 UTC  |  manuell via workflow_dispatch]
+[APScheduler, Mo–Fr 06:00 UTC  |  POST /webhook/sync]
          │
          ▼
-[0. state.db von letztem Run laden]  ← actions/download-artifact
+[server.py: threading.Lock.acquire(blocking=False)]
+  └─ bereits aktiv → 409 Conflict / Scheduler überspringt
+         │
+         ▼
+[Subprozess: sys.executable learnweb_sync.py run]
+  fcntl.flock(STATE_LOCK_PATH) — sekundärer prozessübergreifender Guard
          │
          ▼
 [1. Login]  sso.uni-muenster.de/LearnWeb/learnweb2/login/index.php
-         │  (CSRF-Token aus logintoken-Feld, POST mit Credentials)
+         │  CSRF-Token aus logintoken-Feld, POST mit Credentials
          │  → requests.Session mit MoodleSession-Cookie
          ▼
 [2. Kursliste]  /my/index.php
          │  extrahiert: course_url, course_id, shortname
-         │  (bestehender Code aus learnweb_download.py)
          ▼
 [3. Kursseiten scrapen]  /course/view.php?id={course_id}
-         │  extrahiert pro Aktivität:
-         │    cmid      → <li data-id="...">          (stabiler Schlüssel)
-         │    modtype   → class="... modtype_resource" (Typ)
-         │    name      → data-activityname="..."      (Anzeigename)
-         │    section   → <div class="course-section-header"> sectionname
-         │    view_url  → href=".../mod/resource/view.php?id={cmid}"
+         │  extrahiert pro Aktivität: cmid, modtype, name, section, view_url
          ▼
-[4. Manifest-Vergleich]  state.db (SQLite)
-         │  neu     = cmid nicht in Tabelle resources
-         │  [Änderungserkennung per Datei-Hash: Phase 2+]
+[4. Manifest-Vergleich]  state.db (/data — Railway-Volume)
+         │  neu = cmid nicht in Tabelle resources
          ▼
 [5. Datei herunterladen]  (nur modtype_resource)
-         │  GET /mod/resource/view.php?id={cmid}  mit Session-Cookie
-         │  → folgt Redirect zu pluginfile.php → echte Datei
-         │  Dateiname aus Content-Disposition Header
-         │  Schreiben in Temp-Datei, dann umbenennen (atomar)
+         │  GET /mod/resource/view.php?id={cmid} → pluginfile.php
          ▼
 [6. Notion-Seite anlegen]
-         │  POST /v1/file_uploads  → file_upload_id
-         │  POST upload_url        → Datei hochladen (single_part ≤20MB) ← POST nicht PUT!
-         │  POST /v1/pages         → Seite in "Learnweb Inhalte" anlegen
-         │                           mit file_upload_id in "LW Download"
+         │  POST /v1/file_uploads → file_upload_id
+         │  POST upload_url       → Datei hochladen (≤20MB)
+         │  POST /v1/pages        → Seite in "Learnweb Inhalte" anlegen
          ▼
 [7. Manifest aktualisieren]  notion_id + status='synced' in state.db
-         │
-         ▼
-[8. state.db hochladen]  → actions/upload-artifact
-         │
-         ▼
-[Notion: "Page Created" Trigger → Custom Agent kann reagieren]
 ```
 
 ### HTML-Parsing (Kursseiten)
@@ -111,78 +132,62 @@ Jede Aktivität ist ein `<li data-for="cmitem" data-id="{cmid}">`:
 
 ```html
 <li class="activity resource modtype_resource"
-    id="module-3857603"
     data-for="cmitem"
     data-id="3857603">
   <div data-activityname="Vorlesung 1" data-region="activity-card">
-    <a href=".../mod/resource/view.php?id=3857603">
-      <span class="instancename">Vorlesung 1 <span class="accesshide">File</span></span>
-    </a>
+    <a href=".../mod/resource/view.php?id=3857603">...</a>
   </div>
 </li>
 ```
 
-**Bekannte Aktivitätstypen** (aus HTML-Analyse der Inf1-Kursseite):
+**Bekannte Aktivitätstypen:**
 
-| modtype | Behandlung Phase 1 | Behandlung Phase 2+ |
-|---------|-------------------|---------------------|
-| `resource` | Metadaten im Manifest | Datei herunterladen + in Notion hochladen |
-| `forum` | Metadaten im Manifest | Forum-Seite scrapen für Ankündigungen (Phase 5) |
+| modtype | Phase 1 | Phase 2+ |
+|---------|---------|---------|
+| `resource` | Metadaten im Manifest | Datei herunterladen + Notion |
+| `forum` | Metadaten im Manifest | Forum-Seite scrapen (Phase 5) |
 | `url` | Metadaten im Manifest | Nur URL in Notion eintragen |
 | `opencast` | Metadaten im Manifest | Kein Download (Video zu groß) |
 | `assign` | Metadaten im Manifest | Deadline in Notion (Phase 5) |
-| `label` | Ignorieren (nur Layout) | – |
-
-Abschnittsstruktur: `<div class="course-section-header">` mit `<span class="sectionname">` und `data-id`.
+| `label` | Ignorieren | – |
 
 ### SQLite-Manifest (`state.db`)
 
 ```sql
 CREATE TABLE IF NOT EXISTS resources (
-    cmid             TEXT PRIMARY KEY,   -- Moodle course module ID, stabiler Schlüssel
-    course_id        TEXT NOT NULL,      -- z.B. "88671"
-    course_name      TEXT NOT NULL,      -- z.B. "Informatik I WiSe 2025/26"
-    course_shortname TEXT,               -- Breadcrumb-Kürzel, z.B. "Inf1-2025_2"
-    modtype          TEXT NOT NULL,      -- resource / forum / url / opencast / assign
-    name             TEXT NOT NULL,      -- data-activityname
-    section          TEXT,               -- Abschnittsname
-    view_url         TEXT,               -- /mod/resource/view.php?id={cmid}
-    first_seen       TEXT NOT NULL,      -- ISO-8601 UTC
-    last_seen        TEXT NOT NULL,      -- ISO-8601 UTC
-    file_hash        TEXT,               -- MD5 der heruntergeladenen Datei
-    file_name        TEXT,               -- originaler Dateiname
-    notion_id        TEXT,               -- Notion Page ID nach Push
+    cmid             TEXT PRIMARY KEY,
+    course_id        TEXT NOT NULL,
+    course_name      TEXT NOT NULL,
+    course_shortname TEXT,
+    modtype          TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    section          TEXT,
+    view_url         TEXT,
+    first_seen       TEXT NOT NULL,   -- ISO-8601 UTC
+    last_seen        TEXT NOT NULL,
+    file_hash        TEXT,
+    file_name        TEXT,
+    notion_id        TEXT,
     status           TEXT DEFAULT 'new'  -- new / synced / error / removed
 );
 ```
 
 ### Notion-Integration
 
-**Entwicklungsphase:** `Learnweb Inhalte (TESTING)`
-Notion DB-ID: `322bf244cadc806cbabbf39757c3e27f`
-Notion Data Source ID: `322bf244-cadc-81e9-8e37-000b3f6741fe`
-
-**Produktionsdatenbank (nach Abschluss der Tests):** `Learnweb Inhalte`
-Notion Collection ID: `321bf244-cadc-8075-a7b4-000b872536b0`
-
-> Während der Entwicklung (Phase 2) wird ausschließlich in die TESTING-DB geschrieben.
-> Umstieg auf Produktion erst nach expliziter Freigabe durch Thomas.
-
 **Feldmapping beim Anlegen einer neuen Seite:**
 
 | Notion-Feld | Typ | Quelle / Logik |
 |-------------|-----|----------------|
 | `Name` | title | `data-activityname` aus HTML |
-| `Kurs` | select | course shortname → manuelle Mapping-Tabelle im `.env` oder Config |
-| `Kurs-ID` | text | `course_id` (z.B. "88671") |
-| `Kategorie` | select | Heuristik: Name enthält "Vorlesung"/"Lecture"→`L Lecture`, "Tutorial/Tutorium"→`T Tutorial`, "Exam/Klausur"→`E Exam`, "Python"→`P Python`, "Aufgabe/Blatt"→`A Aufgabensammlung`, "Script/Skript"→`S Script`, sonst→`R Resource` |
-| `Format` | select | Dateiendung aus Content-Disposition (pdf/ipynb/py/pkl/zip) |
-| `Quell-Semester` | select | aus `.env`: `CURRENT_SEMESTER=SoSe 26` |
+| `Kurs` | select | shortname → `COURSE_MAP` JSON-Env |
+| `Kurs-ID` | text | `course_id` |
+| `Kategorie` | select | Heuristik aus Aktivitätsname |
+| `Format` | select | Dateiendung (pdf/ipynb/py/pkl/zip) |
+| `Quell-Semester` | select | `CURRENT_SEMESTER` aus Env |
 | `LW Download` | file | file_upload_id nach Notion File Upload |
-| `Nr` | text | cmid (für spätere Deduplizierung / Referenz) |
-| `Variante` | select | Standard: `Original` (bei Push immer gesetzt) |
-| `Thema` | text | leer lassen (manuell oder per AI-Agent befüllen) |
-| `KurseLearnWeb (TESTING)` | relation | Wird in Phase 2 aktiv befüllt (Notion Page-ID aus KurseLearnWeb) |
+| `Nr` | text | cmid |
+| `Variante` | select | Original / Solution / Template / … |
+| `KurseLearnWeb (TESTING)` | relation | Notion Page-ID aus KurseLearnWeb |
 
 **Notion File Upload Flow (2 Schritte):**
 
@@ -197,24 +202,12 @@ resp = requests.post(
 upload_id = resp.json()["id"]
 upload_url = resp.json()["upload_url"]
 
-# Schritt 2: Datei hochladen (POST, nicht PUT! + Notion-Version Header erforderlich)
-with open(tmp_file, "rb") as f:
-    requests.post(upload_url,
-                  headers={"Authorization": f"Bearer {NOTION_TOKEN}",
-                           "Notion-Version": "2022-06-28"},
-                  files={"file": (filename, f, "application/pdf")})
-
-# Schritt 3: Seite anlegen mit Referenz auf file_upload_id
-properties["LW Download"] = {
-    "files": [{"type": "file_upload", "file_upload": {"id": upload_id}}]
-}
+# Schritt 2: Datei hochladen (POST, nicht PUT! + Notion-Version Header)
+requests.post(upload_url,
+              headers={"Authorization": f"Bearer {NOTION_TOKEN}",
+                       "Notion-Version": "2022-06-28"},
+              files={"file": (filename, file_bytes, "application/pdf")})
 ```
-
-**Hinweis:** Dateigrößenlimit 20MB für `single_part`. Bei größeren Dateien (unwahrscheinlich
-für Kursfolien): Seite ohne Dateianhang anlegen, `status='error'` im Manifest, manuell prüfen.
-
-**Kurs-Verknüpfung:** Relation zu `KurseLearnWeb` wird gesetzt wenn ein Eintrag mit passender
-`LW-ID` in der `KurseLearnWeb`-Datenbank existiert. Kein Fehler wenn nicht vorhanden.
 
 ---
 
@@ -223,43 +216,22 @@ für Kursfolien): Seite ohne Dateianhang anlegen, `status='error'` im Manifest, 
 ```
 learnweb_sync/
 ├── .env.example              # Vorlage für alle benötigten Variablen
-├── .gitignore                # .env, state.db, logs/, *.zip, downloads/, __pycache__
+├── .gitignore
 ├── .github/
 │   └── workflows/
-│       └── sync.yml          # Täglich 06:00 UTC + workflow_dispatch
-├── README.md                 # Setup-Anleitung (Secrets, erster Lauf)
-├── requirements.txt          # requests, beautifulsoup4, python-dotenv, notion-client
-├── learnweb_sync.py          # Haupt-Script (ersetzt learnweb_download.py)
-├── state.db                  # gitignored; in Actions via Artifact persistiert
+│       └── sync.yml          # Manueller Fallback-Trigger (kein eigener Python-Lauf)
+├── .python-version           # Python 3.12 (für Railpack)
+├── README.md
+├── requirements.txt          # requests, beautifulsoup4, python-dotenv, Flask, APScheduler, gunicorn
+├── railway.toml              # Start-Command, Health-Check, Restart-Policy
+├── learnweb_sync.py          # CLI + Sync-Logik
+├── server.py                 # Railway-Orchestrator (Flask + APScheduler)
+├── state.db                  # gitignored; auf Railway via /data-Volume persistent
 ├── downloads/                # gitignored; temporäre Dateien während eines Runs
 ├── docs/
-│   ├── PLAN.md               # dieses Dokument
-│   └── example_course_source_code.html  # HTML-Referenz (gitignored oder .gitkeep)
-└── logs/                     # gitignored
+│   └── PLAN.md               # dieses Dokument
+└── logs/                     # gitignored; lokal wenn LOG_DIR gesetzt
 ```
-
-`.env.example`-Inhalt:
-```
-LEARNWEB_URL=https://www.uni-muenster.de/LearnWeb/learnweb2
-LEARNWEB_USERNAME=
-LEARNWEB_PASSWORD=
-NOTION_TOKEN=
-# Learnweb Inhalte-DB (Testing: 322bf244..., Produktion: 321bf244cadc804b9d3dd94cb2daaad7)
-NOTION_LW_DB_ID=322bf244cadc806cbabbf39757c3e27f
-# KurseLearnWeb-DB (Testing: a44bf244..., Produktion: KurseLearnWeb Produktion)
-NOTION_COURSES_DB_ID=a44bf244cadc82669c11816719a8ec06
-CURRENT_SEMESTER=WS 25/26
-# Mapping: Moodle-Shortname → Notion-Kurs-Select-Wert
-# COURSE_MAP={"OR-2025_1": "OR", "FOF-2025_2": "FoF"}
-# Nur für export-zips benötigt:
-# DOWNLOAD_DIR=/path/to/downloads
-```
-
-Abhaengigkeiten (`requirements.txt`): `requests`, `beautifulsoup4`, `python-dotenv`
-(kein `notion-client` — Notion REST API wird direkt via `requests` angesprochen).
-
-**Entscheidung:** Kein `src/`-Package, kein `pyproject.toml`. Ein einzelnes flaches Script,
-das für einen Nicht-Programmierer lesbar bleibt. Komplexität nur erhöhen wenn nötig.
 
 ---
 
@@ -267,119 +239,58 @@ das für einen Nicht-Programmierer lesbar bleibt. Komplexität nur erhöhen wenn
 
 ### Phase 1 — Scraper + Manifest ✅ ABGESCHLOSSEN
 
-**Ziel:** Lokaler Lauf erkennt alle Aktivitäten in allen Kursen und zeigt welche neu sind.
-
-Deliverables:
-- `learnweb_sync.py` mit `scan`-Kommando ✅
-- Login + Kursliste aus bestehendem `learnweb_download.py` übernommen ✅
-- BeautifulSoup-Parser für `<li data-for="cmitem">` auf Kursseiten ✅
-- SQLite-Manifest (`state.db`) mit Vergleichslogik ✅
-- `sync-courses`-Kommando: KurseLearnWeb (TESTING) in Notion befüllen ✅
+**Deliverables:** `learnweb_sync.py` mit `scan`-Kommando, SQLite-Manifest, `sync-courses`-Kommando.
 
 ### Phase 2 — Datei-Download + Notion-Push ✅ ABGESCHLOSSEN
 
-**Ziel:** Neue `modtype_resource`-Einträge automatisch in Notion anlegen.
-
-Deliverables:
-- `push`-Kommando: lädt Datei herunter → Notion File Upload API → Seite anlegen ✅
-- `run`-Kommando: `scan` + `push` in einem Schritt ✅
-- Fehlerbehandlung: >20MB oder Download-Fehler → Seite ohne Datei anlegen, `status='error'` ✅
-- Deduplizierung: wenn `cmid` bereits `notion_id` hat → überspringen ✅
-- `COURSE_MAP` JSON-Env-Variable: shortname → Kurs-Select-Wert ✅
-- `_guess_variante()`: Solution / Partial-Solution / Template / Annotated / Original ✅
-- `_guess_kategorie()`: erweiterte Heuristik mit nummerierten Präfixen, mock, mitschrift ✅
+**Deliverables:** `push`-Kommando, `run`-Kommando, Fehlerbehandlung, Deduplizierung.
 
 **Testergebnis (TESTING DB, WS 25/26):** 91 Ressourcen, 0 Fehler, Kurs 100 %, R Resource 35 %.
 
-**Hinweis Notion File Upload API:** Schritt 2 muss `POST` (nicht `PUT`) auf `upload_url` sein,
-mit `Notion-Version: 2022-06-28` Header und `files={"file": (filename, bytes, content_type)}`.
+### Phase 3 — Railway-Deployment ✅ ABGESCHLOSSEN
 
-### Phase 3 — GitHub Actions Automation ← **als nächstes**
+**Deliverables:**
+- `server.py`: Flask + APScheduler, Webhook, Health-Check, Parallelisierungsschutz
+- `railway.toml`: Start-Command, Health-Check, Restart-Policy
+- `.python-version`: Python 3.12 für Railpack
+- `requirements.txt` um Flask, APScheduler, gunicorn erweitert
+- `learnweb_sync.py` deploymentsicher gemacht: `STATE_DB_PATH` aus Env, Logging nur stdout ohne `LOG_DIR`
+- `.github/workflows/sync.yml` auf reinen Webhook-Trigger umgebaut
 
-**Ziel:** Täglicher automatischer Lauf ohne manuelle Intervention.
-**Voraussetzung:** Produktions-Switchover (NOTION_LW_DB_ID + NOTION_COURSES_DB_ID auf Produktion setzen).
+**Railway-Setup (einmalig im Dashboard):**
+- Volume unter `/data` anlegen und mounten
+- Env-Variablen setzen (siehe README)
+- Zwei neue GitHub Secrets: `LEARNWEB_SYNC_WEBHOOK_URL`, `SYNC_WEBHOOK_SECRET`
 
-Deliverables:
-- `.github/workflows/sync.yml`
-- Secrets im GitHub Repo: `LEARNWEB_USERNAME`, `LEARNWEB_PASSWORD`, `NOTION_TOKEN`,
-  `NOTION_LW_DB_ID`, `NOTION_COURSES_DB_ID`, `CURRENT_SEMESTER`, `COURSE_MAP`
-- `state.db`-Persistenz via Artifacts:
-  ```yaml
-  - uses: actions/download-artifact@v4        # Manifest vom letzten Run laden
-    with: {name: state-db, path: .}
-    continue-on-error: true                   # beim allerersten Run kein Artefakt vorhanden
-  - run: python learnweb_sync.py run
-  - uses: actions/upload-artifact@v4          # Manifest für nächsten Run speichern
-    with: {name: state-db, path: state.db, retention-days: 90}
-  ```
-- `workflow_dispatch` ohne Parameter → manueller Trigger per GitHub-UI
-- Cron: `0 6 * * 1-5` (Mo–Fr 06:00 UTC = 07:00/08:00 MEZ/MESZ)
-
-**Produktions-Switchover (vor Phase 3):**
+**Produktions-Switchover (falls noch auf TESTING-DBs):**
 - `NOTION_LW_DB_ID` → `321bf244cadc804b9d3dd94cb2daaad7` (Learnweb Inhalte Produktion)
-- `NOTION_COURSES_DB_ID` → KurseLearnWeb Produktion (Collection `321bf244-cadc-80db-b799-000bec418f90`)
+- `NOTION_COURSES_DB_ID` → KurseLearnWeb Produktion
 - `COURSE_MAP` um alle aktiven Kurse erweitern
 
-### Phase 4 — Notion-Button Trigger (optional)
+### Phase 4 — Notion-Button Trigger (optional, zurückgestellt)
 
-**Ziel:** Sync per Button-Klick in Notion auslösen.
-
-**Problem:** Notion Webhook-Buttons senden POST ohne Auth-Header. GitHub API benötigt
-`Authorization: Bearer TOKEN`.
-
-**Lösung:** Kleiner Proxy via Cloudflare Worker (kostenloser Free Tier, 100k Requests/Tag):
-```
-Notion Button → POST notion-webhook-url
-    → Cloudflare Worker (hat GITHUB_TOKEN als Secret)
-        → POST api.github.com/repos/.../actions/workflows/sync.yml/dispatches
-```
-Cloudflare Worker: ~15 Zeilen JavaScript, deployment via Wrangler CLI.
-
-Alternative ohne Proxy: n8n Self-Host oder Make Free Tier als Vermittler.
+Railway-Webhook löst dieselbe Funktion ab. Ein Notion-Button kann direkt auf den
+Railway-Webhook-URL zeigen, sofern der Webhook-Auth-Header gesetzt werden kann.
 
 ### Phase 5 — Forum/Ankündigungen + Assignments (optional, Zukunft)
 
-**Ziel:** Nicht nur Dateien, sondern auch Ankündigungen und Abgabefristen erfassen.
-
-Technische Herausforderungen:
-- Forum-Inhalte stehen nicht auf der Kursseite → separates Scraping von `/mod/forum/view.php`
-- Assignments haben Deadlines → scrapen und in `Prüfungsversuche`/`Veranstaltungen` eintragen
-
-Scope erst definieren wenn Phase 2 stabil und im Einsatz.
-
----
-
-## Umgang mit bestehendem Code
-
-`learnweb_download.py` enthält:
-- `login(session)` → **direkt übernehmen**, unverändert
-- `get_courses(session)` → **direkt übernehmen**
-- `get_course_info(session, course_url)` → nur der `contextid`/`sesskey`-Teil wird für ZIP-Export
-  gebraucht; für Phase 1 nicht benötigt
-- `download_course(session, info)` → als `export-zips`-Kommando **erhalten**
-
-Die Datei `learnweb_download.py` wird nicht gelöscht sondern in `learnweb_sync.py` aufgegangen.
-Nach erfolgreichem Test von Phase 1 kann `learnweb_download.py` aus dem Repo entfernt werden.
+Scope erst definieren wenn Phase 3 stabil und im Einsatz.
 
 ---
 
 ## Kritische Integrationsregeln
 
-1. **`cmid` ist Wahrheit** — nie Name oder URL als Identität. Dozenten benennen Dateien um.
-2. **Nie lokal löschen** wenn etwas remote verschwindet — `status='removed'` setzen, nicht löschen.
-3. **Notion-Felder nie überschreiben** wenn `notion_id` bereits gesetzt ist. Nur neu befüllen.
-4. **Atomare Downloads** — erst in Temp-Datei (`downloads/tmp_{cmid}`), dann umbenennen.
-5. **`state.db` nie ins main-Branch** — wird im separaten Git-Branch `state` persistiert (kein Ablaufdatum, versioniert). Artifacts würden nach 90 Tagen verfallen.
-6. **Organizer-Skill bleibt extern** — der bestehende Claude-Prompt für ZIP-Sortierung ist
-   ein externer Post-Processor, kein Teil des Sync-Kerns. Die Grenze ist unveränderlich:
-   Sync = remote→lokal/Notion. Organize = lokal→kuratiert. Diese Schichten nie vermischen.
+1. **`cmid` ist Wahrheit** — nie Name oder URL als Identität.
+2. **Nie lokal löschen** wenn etwas remote verschwindet — `status='removed'` setzen.
+3. **Notion-Felder nie überschreiben** wenn `notion_id` bereits gesetzt ist.
+4. **Single-Replica** — Railway-Volume erlaubt keinen Multi-Replica-Betrieb.
+5. **`state.db` nie in main-Branch** — gitignored; Persistenz über Railway-Volume.
+6. **Organizer-Skill bleibt extern** — Sync = remote→Notion. Organize = lokal→kuratiert.
 
 ---
 
 ## Offene Punkte / Entscheidungen
 
-- ~~**Kurs-Mapping Config**~~ ✅ Gelöst: `COURSE_MAP` JSON in `.env`, manuell gepflegt.
-- ~~**`state.db` bei GitHub Actions erster Run**~~ ✅ Gelöst: Git-Branch `state`; `git show` schlägt beim ersten Run fehl → leere DB wird neu erstellt.
 - **Notion API Version**: Aktuell `2022-06-28` (letzte stabile); bei Bedarf aktualisieren.
-- **Benachrichtigung bei Fehlern**: GitHub Actions sendet bei Workflow-Failure automatisch Email an Repository-Owner → kein zusätzlicher Notifier nötig.
-- **Produktions-Switchover**: `NOTION_LW_DB_ID` + `NOTION_COURSES_DB_ID` auf Produktionswerte setzen, `COURSE_MAP` erweitern, vor Phase 3 lokal testen.
+- **Produktions-Switchover**: `NOTION_LW_DB_ID` + `NOTION_COURSES_DB_ID` auf Produktionswerte setzen, lokal testen.
+- **Notion-Button für Webhook**: Notion-Buttons können POST senden — prüfen ob Railway-URL direkt nutzbar ist (Auth-Header?).
