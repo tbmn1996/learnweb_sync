@@ -74,9 +74,9 @@ Ruft per `curl` den Railway-Webhook auf. Führt kein eigenes Python aus, schreib
 Ein Python-CLI-Tool (`learnweb_sync.py`) mit folgenden Kommandos:
 
 ```
-python learnweb_sync.py sync-courses  # Kurse in KurseLearnWeb prüfen / anlegen
-python learnweb_sync.py scan          # Kurse mit SyncContent=true scrapen
-python learnweb_sync.py push          # Neue Manifest-Einträge → Notion-Seite anlegen
+python learnweb_sync.py sync-courses  # Alle belegten Kurse erkennen und fehlende Notion-Kursseiten anlegen
+python learnweb_sync.py scan          # Nur Kurse mit SyncContent=true scrapen
+python learnweb_sync.py push          # Neue Manifest-Einträge aktiver Kurse → Notion-Seite anlegen
 python learnweb_sync.py run           # sync-courses + scan + push
 python learnweb_sync.py export-zips   # Backup: alle Kurse als ZIP herunterladen
 ```
@@ -107,23 +107,28 @@ Der produktive Einstiegspunkt auf Railway ist `server.py` (Flask + APScheduler),
          │  → requests.Session mit MoodleSession-Cookie
          ▼
 [2. Kursliste]  /my/index.php
-         │  extrahiert: course_url, course_id, shortname
+         │  extrahiert: course_url, course_id
          ▼
-[3. Kursseiten scrapen]  /course/view.php?id={course_id}
+[3. Discovery / Notion-Abgleich]
+         │  bekannte Kurse per course_id aus Notion-URL erkennen
+         │  unbekannte Kurse einmalig laden → shortname/LW-ID extrahieren
+         ▼
+[4. Kursseiten scrapen]  /course/view.php?id={course_id}
+         │  nur für Kurse mit SyncContent=true
          │  extrahiert pro Aktivität: cmid, modtype, name, section, view_url
          ▼
-[4. Manifest-Vergleich]  state.db (/data — Railway-Volume)
+[5. Manifest-Vergleich]  state.db (/data — Railway-Volume)
          │  neu = cmid nicht in Tabelle resources
          ▼
-[5. Datei herunterladen]  (nur modtype_resource)
+[6. Datei herunterladen]  (nur modtype_resource)
          │  GET /mod/resource/view.php?id={cmid} → pluginfile.php
          ▼
-[6. Notion-Seite anlegen]
+[7. Notion-Seite anlegen]
          │  POST /v1/file_uploads → file_upload_id
          │  POST upload_url       → Datei hochladen (≤20MB)
          │  POST /v1/pages        → Seite in "Learnweb Inhalte" anlegen
          ▼
-[7. Manifest aktualisieren]  notion_id + status='synced' in state.db
+[8. Manifest aktualisieren]  notion_id + status='synced' in state.db
 ```
 
 ### HTML-Parsing (Kursseiten)

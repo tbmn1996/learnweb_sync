@@ -166,7 +166,20 @@ def _extract_shortname(soup: BeautifulSoup) -> str:
     else:
         title = soup.find("title")
         shortname = title.get_text(strip=True).split(":")[0].strip() if title else "UNKNOWN"
-    return re.sub(r"[^\w\-]", "_", shortname).strip("_")
+    return _normalize_lw_id(shortname)
+
+
+def _normalize_lw_id(value: str) -> str:
+    """Normalisiert Kurskennungen wie Notion-LW-ID und Breadcrumb-Shortnames identisch."""
+    return re.sub(r"[^\w\-]", "_", value).strip("_")
+
+
+def parse_course_id_from_url(url: str) -> str | None:
+    """Extrahiert die Moodle-Kurs-ID aus einer LearnWeb-URL."""
+    if not url:
+        return None
+    match = re.search(r"[?&]id=(\d+)", url)
+    return match.group(1) if match else None
 
 
 def login(session: requests.Session) -> bool:
@@ -227,33 +240,15 @@ def get_courses(session: requests.Session) -> list[dict]:
     return courses
 
 
-def get_course_activities(
-    session: requests.Session, course: dict
-) -> tuple[str, list[dict]]:
-    """
-    Scrape a course page and return (shortname, activities).
-
-    shortname: Moodle-Kürzel aus dem Breadcrumb (z.B. "Inf1-2025_2")
-    activities: Liste aller Aktivitäten auf der Seite
-
-    HTML-Struktur:
-        <li class="section course-section" data-sectionname="Vorlesungsunterlagen">
-          <ul data-for="cmlist">
-            <li data-for="cmitem" data-id="3857603" class="activity resource modtype_resource">
-              <div data-activityname="Vorlesung 1">
-                <a href=".../mod/resource/view.php?id=3857603">...</a>
-              </div>
-            </li>
-          </ul>
-        </li>
-
-    Labels (modtype_label) werden übersprungen – reine Layout-Elemente ohne Inhalt.
-    """
-    resp = session.get(course["url"])
+def _load_course_page(session: requests.Session, course_url: str) -> BeautifulSoup:
+    """Lädt eine Kursseite und gibt den geparsten HTML-Baum zurück."""
+    resp = session.get(course_url)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    shortname = _extract_shortname(soup)
+    return BeautifulSoup(resp.text, "html.parser")
 
+
+def _extract_activities(soup: BeautifulSoup, course: dict) -> list[dict]:
+    """Extrahiert alle Aktivitäten aus einem bereits geladenen Kurs-HTML."""
     activities = []
 
     for section_li in soup.find_all("li", class_="course-section"):
@@ -310,7 +305,34 @@ def get_course_activities(
                 }
             )
 
-    return shortname, activities
+    return activities
+
+
+def get_course_activities(
+    session: requests.Session, course: dict
+) -> tuple[str, list[dict]]:
+    """
+    Lädt eine Kursseite und gibt (shortname, activities) zurück.
+
+    shortname: Moodle-Kürzel aus dem Breadcrumb (z.B. "Inf1-2025_2")
+    activities: Liste aller Aktivitäten auf der Seite
+
+    HTML-Struktur:
+        <li class="section course-section" data-sectionname="Vorlesungsunterlagen">
+          <ul data-for="cmlist">
+            <li data-for="cmitem" data-id="3857603" class="activity resource modtype_resource">
+              <div data-activityname="Vorlesung 1">
+                <a href=".../mod/resource/view.php?id=3857603">...</a>
+              </div>
+            </li>
+          </ul>
+        </li>
+
+    Labels (modtype_label) werden übersprungen – reine Layout-Elemente ohne Inhalt.
+    """
+    soup = _load_course_page(session, course["url"])
+    shortname = _extract_shortname(soup)
+    return shortname, _extract_activities(soup, course)
 
 
 # ── Notion API ────────────────────────────────────────────────────────────────
@@ -354,7 +376,7 @@ def _notion_request(method: str, url: str, **kwargs) -> requests.Response:
 def notion_query_courses_db() -> dict[str, dict]:
     """
     Liest alle Einträge aus KurseLearnWeb (TESTING).
-    Gibt {lw_id: {"page_id": ..., "sync_content": bool, "url": ...}} zurück.
+    Gibt eindeutige Indizes und Konfliktmengen für course_id und LW-ID zurück.
     Paginierung wird automatisch behandelt (bis zu 100 Einträge pro Request).
     """
     all_pages = []
@@ -376,19 +398,55 @@ def notion_query_courses_db() -> dict[str, dict]:
             break
         next_cursor = data.get("next_cursor")
 
-    result = {}
+    rows = []
     for page in all_pages:
         props = page["properties"]
         # LW-ID ist ein title-Feld — normieren wie _extract_shortname(), damit
         # manuell angelegte Einträge (z.B. mit Leerzeichen) korrekt erkannt werden.
         lw_id_raw = "".join(t["plain_text"] for t in props["LW-ID"]["title"])
-        lw_id = re.sub(r"[^\w\-]", "_", lw_id_raw).strip("_")
-        result[lw_id] = {
+        lw_id = _normalize_lw_id(lw_id_raw)
+        url = (props["URL"]["url"] or "") if props.get("URL") else ""
+        rows.append(
+            {
             "page_id": page["id"],
+            "lw_id": lw_id,
             "sync_content": props["SyncContent"]["checkbox"],
-            "url": (props["URL"]["url"] or "") if props.get("URL") else "",
-        }
-    return result
+            "url": url,
+            "course_id": parse_course_id_from_url(url),
+            }
+        )
+
+    by_course_id: dict[str, dict] = {}
+    duplicate_course_ids: set[str] = set()
+    by_lw_id: dict[str, dict] = {}
+    duplicate_lw_ids: set[str] = set()
+
+    for row in rows:
+        course_id = row["course_id"]
+        if course_id:
+            if course_id in duplicate_course_ids:
+                pass
+            elif course_id in by_course_id:
+                by_course_id.pop(course_id, None)
+                duplicate_course_ids.add(course_id)
+            else:
+                by_course_id[course_id] = row
+
+        lw_id = row["lw_id"]
+        if lw_id in duplicate_lw_ids:
+            continue
+        if lw_id in by_lw_id:
+            by_lw_id.pop(lw_id, None)
+            duplicate_lw_ids.add(lw_id)
+        else:
+            by_lw_id[lw_id] = row
+
+    return {
+        "by_course_id": by_course_id,
+        "duplicate_course_ids": duplicate_course_ids,
+        "by_lw_id": by_lw_id,
+        "duplicate_lw_ids": duplicate_lw_ids,
+    }
 
 
 def notion_create_course(lw_id: str, course_url: str) -> str:
@@ -413,6 +471,18 @@ def notion_create_course(lw_id: str, course_url: str) -> str:
     return resp.json()["id"]
 
 
+def notion_update_course(page_id: str, *, course_url: str | None = None) -> None:
+    """Aktualisiert nur die URL-Property einer bestehenden Notion-Kursseite."""
+    if course_url is None:
+        return
+    _notion_request(
+        "PATCH",
+        f"{NOTION_API}/pages/{page_id}",
+        headers=_notion_headers(),
+        json={"properties": {"URL": {"url": course_url}}},
+    )
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 
@@ -421,10 +491,10 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
     Gleicht alle belegten LearnWeb-Kurse mit der KurseLearnWeb-DB in Notion ab.
     Fehlende Kurse werden neu angelegt (SyncContent=false).
 
-    Lädt jede Kursseite einmal und gibt zurück:
-        {course_id: {shortname, notion_page_id, sync_content, url, activities}}
+    Lädt Kursseiten nur für bisher unbekannte Kurse und gibt zurück:
+        {course_id: {shortname, notion_page_id, sync_content, url, conflict, ...}}
 
-    Der Rückgabewert wird von cmd_scan() weiterverwendet (activities bereits gecacht).
+    Der Rückgabewert wird von cmd_scan() und cmd_push() weiterverwendet.
     """
     if not NOTION_TOKEN:
         log.error("NOTION_TOKEN nicht gesetzt – bitte in .env eintragen")
@@ -453,54 +523,131 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
     except Exception as e:
         log.error(f"Notion-Abfrage fehlgeschlagen: {e}")
         sys.exit(1)
-    log.info(f"  {len(notion_courses)} Kurs/Kurse bereits in Notion erfasst")
+    known_unique = len(notion_courses["by_lw_id"]) + len(notion_courses["duplicate_lw_ids"])
+    log.info(f"  {known_unique} Kurs/Kurse bereits in Notion erfasst")
 
     course_map: dict[str, dict] = {}
     new_courses: list[str] = []
+    conflict_courses: list[str] = []
+    known_courses = 0
 
     for course in courses:
-        log.info(f"Lade Kursseite: {course['name']}")
+        course_id = course["course_id"]
+        known_row = notion_courses["by_course_id"].get(course_id)
+        if known_row:
+            known_courses += 1
+            course_map[course_id] = {
+                "name": course["name"],
+                "shortname": known_row["lw_id"],
+                "notion_page_id": known_row["page_id"],
+                "sync_content": known_row["sync_content"],
+                "url": course["url"],
+                "conflict": False,
+            }
+            continue
+
+        if course_id in notion_courses["duplicate_course_ids"]:
+            blocked = f"{course['name']} [{course_id}]"
+            log.warning(
+                f"Konflikt in Notion – mehrere Kursseiten für course_id={course_id}; "
+                f"überspringe {course['name']}"
+            )
+            conflict_courses.append(blocked)
+            course_map[course_id] = {
+                "name": course["name"],
+                "shortname": None,
+                "notion_page_id": None,
+                "sync_content": False,
+                "url": course["url"],
+                "conflict": True,
+                "blocked_reason": "duplicate_course_id",
+            }
+            continue
+
+        log.info(f"Lade Kursseite für unbekannten Kurs: {course['name']}")
         try:
-            shortname, activities = get_course_activities(session, course)
+            soup = _load_course_page(session, course["url"])
+            shortname = _extract_shortname(soup)
         except Exception as e:
             log.error(f"  Fehler beim Laden von {course['name']}: {e}")
             continue
 
-        # Kurs in Notion anlegen falls noch nicht vorhanden
-        if shortname not in notion_courses:
+        if shortname in notion_courses["duplicate_lw_ids"]:
+            blocked = f"{shortname} [{course_id}]"
+            log.warning(
+                f"Konflikt in Notion – mehrere Kursseiten für LW-ID={shortname}; "
+                f"überspringe {course['name']}"
+            )
+            conflict_courses.append(blocked)
+            course_map[course_id] = {
+                "name": course["name"],
+                "shortname": shortname,
+                "notion_page_id": None,
+                "sync_content": False,
+                "url": course["url"],
+                "conflict": True,
+                "blocked_reason": "duplicate_lw_id",
+            }
+            continue
+
+        notion_row = notion_courses["by_lw_id"].get(shortname)
+        if notion_row:
+            page_id = notion_row["page_id"]
+            sync_content = notion_row["sync_content"]
+            if notion_row["url"] != course["url"]:
+                notion_update_course(page_id, course_url=course["url"])
+                old_course_id = notion_row.get("course_id")
+                if old_course_id and notion_courses["by_course_id"].get(old_course_id) == notion_row:
+                    notion_courses["by_course_id"].pop(old_course_id, None)
+                notion_row = {
+                    **notion_row,
+                    "url": course["url"],
+                    "course_id": course_id,
+                }
+                notion_courses["by_lw_id"][shortname] = notion_row
+            notion_courses["by_course_id"][course_id] = notion_row
+        else:
             log.info(f"  → Neuer Kurs: {shortname} – wird in Notion angelegt")
             try:
                 page_id = notion_create_course(shortname, course["url"])
-                notion_courses[shortname] = {
+                sync_content = False
+                notion_row = {
                     "page_id": page_id,
-                    "sync_content": False,
+                    "lw_id": shortname,
+                    "sync_content": sync_content,
                     "url": course["url"],
+                    "course_id": course_id,
                 }
+                notion_courses["by_lw_id"][shortname] = notion_row
+                notion_courses["by_course_id"][course_id] = notion_row
                 new_courses.append(shortname)
             except Exception as e:
                 log.error(f"  Fehler beim Anlegen von {shortname}: {e}")
                 page_id = None
-        else:
-            page_id = notion_courses[shortname]["page_id"]
+                sync_content = False
 
-        course_map[course["course_id"]] = {
+        course_map[course_id] = {
+            "name": course["name"],
             "shortname": shortname,
             "notion_page_id": page_id,
-            "sync_content": notion_courses.get(shortname, {}).get("sync_content", False),
+            "sync_content": sync_content,
             "url": course["url"],
-            "activities": activities,  # gecacht – wird in cmd_scan() weiterverwendet
+            "conflict": False,
         }
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print("\n" + "=" * 60)
-    if new_courses:
-        print(f"✓ {len(new_courses)} neuer Kurs/Kurse in Notion angelegt:")
-        for name in new_courses:
-            print(f"    + {name}")
-    else:
-        print("✓ Alle Kurse bereits in Notion erfasst.")
-    sync_count = sum(1 for v in course_map.values() if v["sync_content"])
+    print(f"✓ {known_courses} bekannter Kurs/Kurse eindeutig erkannt.")
+    print(f"✓ {len(new_courses)} neuer Kurs/Kurse in Notion angelegt.")
+    print(f"✓ {len(conflict_courses)} Konflikt(e) blockiert.")
+    sync_count = sum(
+        1 for v in course_map.values() if v["sync_content"] and not v.get("conflict", False)
+    )
     print(f"  {sync_count} von {len(course_map)} Kurs/Kursen haben SyncContent aktiviert.")
+    if conflict_courses:
+        print("  Blockierte Konflikte:")
+        for name in conflict_courses:
+            print(f"    ! {name}")
     print("=" * 60 + "\n")
 
     return course_map
@@ -508,11 +655,11 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
 
 def cmd_scan(session: requests.Session | None = None, course_map: dict | None = None):
     """
-    Kurse mit SyncContent=true scrapen und neue Aktivitäten im Manifest erfassen.
+    Scrapt nur Kurse mit SyncContent=true und erfasst neue Aktivitäten im Manifest.
     Führt zuerst sync-courses aus (prüft/legt Kurse in Notion an).
 
     session und course_map können von cmd_run() übergeben werden, um
-    doppelten Login und doppeltes Laden der Kursseiten zu vermeiden.
+    doppelten Login zu vermeiden.
     """
     # Eigener Login nur wenn kein Session von außen übergeben wurde
     if session is None:
@@ -525,22 +672,41 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
     if course_map is None:
         course_map = cmd_sync_courses(session)
 
-    # Schritt 2: Nur Kurse mit SyncContent=true scannen
+    active_courses = [
+        (course_id, info)
+        for course_id, info in course_map.items()
+        if info["sync_content"] and not info.get("conflict", False)
+    ]
+    if not active_courses:
+        log.warning("Keine konfliktfreien Kurse mit SyncContent=true – nichts zu scannen.")
+        return
+
+    # Schritt 2: Nur konfliktfreie Kurse mit SyncContent=true scannen
     conn = init_db()
     total_new = 0
     new_by_course: dict[str, list] = {}
 
     try:
-        for course_id, info in course_map.items():
-            if not info["sync_content"]:
-                log.info(f"Übersprungen (SyncContent=false): {info['shortname']}")
+        for course_id, info in active_courses:
+            course = {
+                "course_id": course_id,
+                "name": info.get("name") or info.get("shortname") or course_id,
+                "url": info["url"],
+            }
+            try:
+                soup = _load_course_page(session, info["url"])
+                shortname = _extract_shortname(soup)
+                activities = _extract_activities(soup, course)
+            except Exception as e:
+                log.error(f"Fehler beim Scrapen von {info.get('shortname') or course_id}: {e}")
                 continue
 
-            log.info(f"Scanne: {info['shortname']} ({len(info['activities'])} Aktivitäten)")
+            info["shortname"] = shortname
+            log.info(f"Scanne: {shortname} ({len(activities)} Aktivitäten)")
             new_in_course = []
 
-            for activity in info["activities"]:
-                activity["course_shortname"] = info["shortname"]
+            for activity in activities:
+                activity["course_shortname"] = shortname
                 is_new = upsert_activity(conn, activity)
                 if is_new:
                     new_in_course.append(activity)
@@ -549,12 +715,12 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
             # Bestehende Einträge ohne Shortname nachfüllen (Migration alter Daten)
             conn.execute(
                 "UPDATE resources SET course_shortname = ? WHERE course_id = ? AND course_shortname IS NULL",
-                (info["shortname"], course_id),
+                (shortname, course_id),
             )
             conn.commit()
             log.info(f"  {len(new_in_course)} neue Aktivität(en)")
             if new_in_course:
-                new_by_course[info["shortname"]] = new_in_course
+                new_by_course[shortname] = new_in_course
     finally:
         conn.close()
 
@@ -820,14 +986,14 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
     if course_map is None:
         course_map = cmd_sync_courses(session)
 
-    # Nur aktive Kurse (SyncContent=true) → {course_id: notion_page_id}
+    # Nur aktive, konfliktfreie Kurse (SyncContent=true) → {course_id: notion_page_id}
     active = {
         cid: info["notion_page_id"]
         for cid, info in course_map.items()
-        if info["sync_content"]
+        if info["sync_content"] and not info.get("conflict", False)
     }
     if not active:
-        log.warning("Keine Kurse mit SyncContent=true – nichts zu pushen.")
+        log.warning("Keine konfliktfreien Kurse mit SyncContent=true – nichts zu pushen.")
         return
 
     conn = init_db()
@@ -838,7 +1004,7 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
         placeholders = ",".join("?" * len(active))
         rows = conn.execute(
             f"""
-            SELECT cmid, course_id, name, view_url
+            SELECT cmid, course_id, name, view_url, course_shortname
             FROM resources
             WHERE modtype = 'resource'
               AND notion_id IS NULL
@@ -854,7 +1020,7 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
 
         log.info(f"{len(rows)} Ressource(n) zum Pushen.")
 
-        for cmid, course_id, name, view_url in rows:
+        for cmid, course_id, name, view_url, db_course_shortname in rows:
             log.info(f"  Push: {name} (cmid={cmid})")
 
             # ── Datei herunterladen ────────────────────────────────────────────
@@ -885,12 +1051,14 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
                 log.warning(f"    Upload-Fehler: {e} – Seite wird ohne Datei angelegt")
 
             # ── Notion-Seite anlegen ───────────────────────────────────────────
+            map_shortname = course_map.get(course_id, {}).get("shortname", "")
+            db_shortname = db_course_shortname or ""
             resource = {
                 "cmid": cmid,
                 "course_id": course_id,
                 "name": name,
                 "file_name": file_name,
-                "course_shortname": course_map.get(course_id, {}).get("shortname", ""),
+                "course_shortname": map_shortname or db_shortname,
             }
             try:
                 notion_id = notion_create_lw_page(resource, upload_id, active.get(course_id))

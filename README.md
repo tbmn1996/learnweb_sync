@@ -13,9 +13,10 @@ Der Service läuft dauerhaft auf Railway und hält `state.db` in einem persisten
 ## Was das Skript macht
 
 1. Loggt sich in LearnWeb ein
-2. Scannt alle Kurse auf neue Aktivitäten (Dateien, Ordner, Foren, etc.)
-3. Vergleicht mit dem Manifest (`state.db`) — nur echte Neuigkeiten werden gemeldet
-4. Lädt neue Dateien herunter und legt Notion-Seiten an (mit PDF-Anhang)
+2. Erkennt alle belegten Kurse und legt neue Kurse in `KurseLearnWeb` an
+3. Scrapt nur Kurse mit `SyncContent=true` auf neue Aktivitäten
+4. Vergleicht mit dem Manifest (`state.db`) — nur echte Neuigkeiten werden gemeldet
+5. Lädt neue Dateien herunter und legt Notion-Seiten an (mit PDF-Anhang)
 
 ## Lokales Setup (Entwicklung)
 
@@ -31,9 +32,10 @@ CLI-Befehle für lokale Läufe:
 
 | Befehl | Was er tut |
 |--------|-----------|
-| `python learnweb_sync.py scan` | Kurse scannen, neue Aktivitäten ausgeben |
-| `python learnweb_sync.py push` | Neue Ressourcen herunterladen + Notion-Seiten anlegen |
-| `python learnweb_sync.py run` | `scan` + `push` in einem Schritt |
+| `python learnweb_sync.py sync-courses` | Alle belegten Kurse erkennen und fehlende Notion-Kursseiten anlegen |
+| `python learnweb_sync.py scan` | Nur Kurse mit `SyncContent=true` scrapen und neue Aktivitäten ausgeben |
+| `python learnweb_sync.py push` | Nur neue Ressourcen aus aktiven Kursen herunterladen + Notion-Seiten anlegen |
+| `python learnweb_sync.py run` | `sync-courses` + `scan` + `push` in einem Schritt |
 | `python learnweb_sync.py export-zips` | Alle Kurse als ZIP-Backup herunterladen |
 
 Lokal läuft der Sync direkt als CLI — kein `server.py` nötig.
