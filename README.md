@@ -17,6 +17,7 @@ Der Service läuft dauerhaft auf Railway und hält `state.db` in einem persisten
 3. Scrapt nur Kurse mit `SyncContent=true` auf neue Aktivitäten
 4. Vergleicht mit dem Manifest (`state.db`) — nur echte Neuigkeiten werden gemeldet
 5. Lädt neue Dateien herunter, aggregiert Folder-Dateien in einer Notion-Row und legt Notion-Seiten für `resource`, `folder`, `url` und `page` an
+   `url`-Aktivitäten speichern ihre Zieladresse dabei in der Notion-Property `Ziel-URL`; nur Altbestand behält die frühere Bookmark-Darstellung im Seiteninhalt.
 6. Meldet aktive Kurse explizit, wenn sie zwar Inhalte haben, aber keine aktuell pushbaren Inhaltstypen enthalten
 
 ## Lokales Setup (Entwicklung)
@@ -67,6 +68,10 @@ Lokal läuft der Sync direkt als CLI — kein `server.py` nötig.
 | `SYNC_SCHEDULE_TIMEZONE` | optional | `UTC` (Default) |
 | `SYNC_RUN_TIMEOUT_SECONDS` | optional | `1800` (Default) |
 | `SYNC_FAILURE_EXIT_THRESHOLD` | optional | `3` (Default) |
+
+Zusätzlich muss in der via `NOTION_LW_DB_ID` referenzierten Learnweb-Inhalte-Datenbank die
+URL-Property `Ziel-URL` existieren. Neue `modtype=url`-Einträge schreiben ihre Zieladresse in
+diese Property; bestehende URL-Seiten behalten ihre frühere Bookmark-Darstellung.
 
 3. **Deploy** starten — `railway.toml` im Repo übernimmt Start-Command, Health-Check und Restart-Policy.
 

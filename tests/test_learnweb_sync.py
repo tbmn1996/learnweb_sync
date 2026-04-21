@@ -728,6 +728,68 @@ class LearnwebSyncTests(unittest.TestCase):
 
         self.assertEqual(properties["Quell-Semester"], {"select": {"name": "SoSe 26"}})
 
+    def test_build_lw_page_properties_sets_target_url_when_present(self):
+        properties = lws._build_lw_page_properties(
+            {
+                "cmid": "cm-1",
+                "course_id": "1",
+                "name": "External Material",
+            },
+            None,
+            target_url="https://external.example.com/doc",
+        )
+
+        self.assertEqual(
+            properties[lws.LW_TARGET_URL_PROPERTY],
+            {"url": "https://external.example.com/doc"},
+        )
+
+    def test_build_lw_page_properties_omits_target_url_when_absent(self):
+        properties = lws._build_lw_page_properties(
+            {
+                "cmid": "cm-1",
+                "course_id": "1",
+                "name": "External Material",
+            },
+            None,
+        )
+
+        self.assertNotIn(lws.LW_TARGET_URL_PROPERTY, properties)
+
+    def test_notion_lw_db_has_target_url_property_detects_url_field(self):
+        with mock.patch.object(
+            lws,
+            "_notion_request",
+            return_value=FakeResponse(
+                {
+                    "properties": {
+                        lws.LW_TARGET_URL_PROPERTY: {
+                            "name": lws.LW_TARGET_URL_PROPERTY,
+                            "type": "url",
+                        }
+                    }
+                }
+            ),
+        ) as notion_request:
+            self.assertTrue(lws.notion_lw_db_has_target_url_property())
+
+        notion_request.assert_called_once()
+
+    def test_notion_lw_db_has_target_url_property_returns_false_when_missing(self):
+        with mock.patch.object(
+            lws,
+            "_notion_request",
+            return_value=FakeResponse(
+                {
+                    "properties": {
+                        "Name": {"name": "Name", "type": "title"},
+                        "URL": {"name": "URL", "type": "url"},
+                    }
+                }
+            ),
+        ):
+            self.assertFalse(lws.notion_lw_db_has_target_url_property())
+
     def test_cmd_scan_reports_active_course_without_pushable_resources(self):
         course_map = {
             "1": {
@@ -1303,7 +1365,7 @@ class LearnwebSyncTests(unittest.TestCase):
         update_page.assert_not_called()
         self.assertEqual(row, ("folder-page", "error"))
 
-    def test_cmd_push_creates_url_page_with_bookmark_block(self):
+    def test_cmd_push_creates_url_page_with_target_url_property(self):
         course_map = {
             "1": {
                 "shortname": "Course_1",
@@ -1346,8 +1408,9 @@ class LearnwebSyncTests(unittest.TestCase):
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "notion_lw_db_has_target_url_property", return_value=True),
                     mock.patch.object(lws, "_extract_url_target", return_value="https://external.example.com/doc"),
-                    mock.patch.object(lws, "notion_create_lw_page", return_value="url-page"),
+                    mock.patch.object(lws, "notion_create_lw_page", return_value="url-page") as create_page,
                     mock.patch.object(lws, "notion_append_page_children") as append_children,
                 ):
                     lws.cmd_push(session=mock.Mock(), course_map=course_map)
@@ -1361,12 +1424,209 @@ class LearnwebSyncTests(unittest.TestCase):
             finally:
                 conn.close()
 
+        create_page.assert_called_once()
+        self.assertEqual(
+            create_page.call_args.kwargs["target_url"],
+            "https://external.example.com/doc",
+        )
+        append_children.assert_not_called()
+        self.assertEqual(row, ("url-page", "synced"))
+
+    def test_cmd_push_marks_unsynced_url_error_when_target_url_property_missing(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "url-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "url",
+                            "External Material",
+                            "General",
+                            "https://example.com/mod/url/view.php?id=url-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "page-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "page",
+                            "Overview",
+                            "General",
+                            "https://example.com/mod/page/view.php?id=page-1",
+                            "2026-01-01T00:00:01+00:00",
+                            "2026-01-01T00:00:01+00:00",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "notion_lw_db_has_target_url_property", return_value=False),
+                    mock.patch.object(lws, "_extract_url_target") as extract_url_target,
+                    mock.patch.object(lws, "_extract_page_content", return_value="Page content"),
+                    mock.patch.object(lws, "notion_create_lw_page", return_value="page-page") as create_page,
+                    mock.patch.object(lws, "notion_append_page_children") as append_children,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT cmid, notion_id, status, failure_reason
+                    FROM resources
+                    ORDER BY cmid
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        extract_url_target.assert_not_called()
+        create_page.assert_called_once_with(
+            {
+                "cmid": "page-1",
+                "course_id": "1",
+                "name": "Overview",
+                "course_shortname": "Course_1",
+            },
+            None,
+            "course-page",
+        )
         append_children.assert_called_once()
         self.assertEqual(
-            append_children.call_args.args[1],
-            [lws._build_bookmark_block("https://external.example.com/doc")],
+            rows,
+            [
+                ("page-1", "page-page", "synced", None),
+                ("url-1", None, "error", "missing_target_url_property"),
+            ],
         )
-        self.assertEqual(row, ("url-page", "synced"))
+
+    def test_cmd_push_marks_url_error_when_create_fails_and_continues(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "url-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "url",
+                            "External Material",
+                            "General",
+                            "https://example.com/mod/url/view.php?id=url-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "page-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "page",
+                            "Overview",
+                            "General",
+                            "https://example.com/mod/page/view.php?id=page-1",
+                            "2026-01-01T00:00:01+00:00",
+                            "2026-01-01T00:00:01+00:00",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                def fake_create_lw_page(resource, upload_id, course_page_id, *, target_url=None):
+                    if target_url:
+                        raise requests.HTTPError("HTTP 400")
+                    return "page-page"
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "notion_lw_db_has_target_url_property", return_value=True),
+                    mock.patch.object(lws, "_extract_url_target", return_value="https://external.example.com/doc"),
+                    mock.patch.object(lws, "_extract_page_content", return_value="Page content"),
+                    mock.patch.object(lws, "notion_create_lw_page", side_effect=fake_create_lw_page),
+                    mock.patch.object(lws, "notion_append_page_children") as append_children,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT cmid, notion_id, status FROM resources ORDER BY cmid"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        append_children.assert_called_once()
+        self.assertEqual(
+            rows,
+            [
+                ("page-1", "page-page", "synced"),
+                ("url-1", None, "error"),
+            ],
+        )
 
     def test_cmd_push_creates_page_with_chunked_paragraph_blocks(self):
         course_map = {

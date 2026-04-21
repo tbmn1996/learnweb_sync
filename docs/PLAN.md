@@ -130,7 +130,7 @@ Der produktive Einstiegspunkt auf Railway ist `server.py` (Flask + APScheduler),
          │  POST /v1/file_uploads → file_upload_id(s)
          │  POST upload_url       → Datei(en) hochladen (≤20MB je Datei)
          │  POST /v1/pages        → Seite in "Learnweb Inhalte" anlegen
-         │  PATCH /v1/blocks/...  → optionale Bookmark-/Paragraph-Blöcke anhängen
+         │  PATCH /v1/blocks/...  → optionale Paragraph-Blöcke für `page`-Inhalte anhängen
          ▼
 [8. Manifest aktualisieren]  notion_id + status='synced' in state.db
 ```
@@ -196,9 +196,14 @@ CREATE TABLE IF NOT EXISTS resources (
 | `Format` | select | Dateiendung (pdf/ipynb/py/pkl/zip) |
 | `Quell-Semester` | select | automatisch aus Datum in `Europe/Berlin` (`SoSe`: 01.04.–30.09., `WS`: 01.10.–31.03.), optionaler Override via `CURRENT_SEMESTER_OVERRIDE` |
 | `LW Download` | file | ein oder mehrere `file_upload`-Einträge nach Notion File Upload |
+| `Ziel-URL` | url | extrahierte externe Zieladresse, nur für `modtype=url` |
 | `Nr` | text | cmid |
 | `Variante` | select | Original / Solution / Template / … |
 | `KurseLearnWeb (TESTING)` | relation | Notion Page-ID aus KurseLearnWeb |
+
+Bereits synchronisierte `url`-Seiten behalten ihren historischen Bookmark-Block im Inhalt.
+Neue `url`-Seiten zeigen die Zieladresse ausschließlich in `Ziel-URL`; diese gemischte UI-Darstellung
+ist akzeptiert und wird nicht automatisch backfilled.
 
 **Notion File Upload Flow (2 Schritte):**
 

@@ -47,6 +47,7 @@ NOTION_COURSES_DB_ID = os.getenv("NOTION_COURSES_DB_ID", "")  # KurseLearnWeb-DB
 NOTION_LW_DB_ID = os.getenv("NOTION_LW_DB_ID", "")           # Learnweb Inhalte-DB
 NOTION_API = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
+LW_TARGET_URL_PROPERTY = "Ziel-URL"
 SEMESTER_TIMEZONE = os.getenv("SEMESTER_TIMEZONE", "Europe/Berlin")
 CURRENT_SEMESTER_OVERRIDE = os.getenv("CURRENT_SEMESTER_OVERRIDE", "").strip()
 
@@ -884,6 +885,27 @@ def notion_update_course(page_id: str, *, course_url: str | None = None) -> None
     )
 
 
+def notion_lw_db_has_target_url_property() -> bool:
+    """Prüft, ob die Learnweb-Inhalte-DB die Ziel-URL-Property als URL-Feld enthält."""
+    resp = _notion_request(
+        "GET",
+        f"{NOTION_API}/databases/{NOTION_LW_DB_ID}",
+        headers=_notion_headers(),
+    )
+    properties = resp.json().get("properties", {})
+
+    property_obj = properties.get(LW_TARGET_URL_PROPERTY)
+    if isinstance(property_obj, dict):
+        return property_obj.get("type") == "url"
+
+    return any(
+        isinstance(prop, dict)
+        and prop.get("name") == LW_TARGET_URL_PROPERTY
+        and prop.get("type") == "url"
+        for prop in properties.values()
+    )
+
+
 def _normalize_file_upload_ids(file_upload_ids: str | list[str] | None) -> list[str]:
     """Normalisiert einen einzelnen Upload oder eine Upload-Liste auf eine Liste."""
     if file_upload_ids is None:
@@ -919,6 +941,7 @@ def _build_lw_page_properties(
     course_notion_page_id: str | None,
     *,
     file_upload_ids: str | list[str] | None = None,
+    target_url: str | None = None,
 ) -> dict:
     """
     Baut die Notion-Properties für einen LearnWeb-Inhalt.
@@ -959,6 +982,9 @@ def _build_lw_page_properties(
 
     properties["Quell-Semester"] = {"select": {"name": _semester_label_for_datetime()}}
 
+    if target_url:
+        properties[LW_TARGET_URL_PROPERTY] = {"url": target_url}
+
     if normalized_upload_ids:
         properties["LW Download"] = {
             "files": [
@@ -979,6 +1005,8 @@ def notion_create_lw_page(
     resource: dict,
     file_upload_ids: str | list[str] | None,
     course_notion_page_id: str | None,
+    *,
+    target_url: str | None = None,
 ) -> str:
     """
     Legt eine neue Seite in Learnweb Inhalte (TESTING) an.
@@ -994,6 +1022,7 @@ def notion_create_lw_page(
                 resource,
                 course_notion_page_id,
                 file_upload_ids=file_upload_ids,
+                target_url=target_url,
             ),
         },
     )
@@ -1005,6 +1034,8 @@ def notion_update_lw_page(
     resource: dict,
     file_upload_ids: str | list[str] | None,
     course_notion_page_id: str | None,
+    *,
+    target_url: str | None = None,
 ) -> None:
     """Aktualisiert die Properties einer bestehenden LearnWeb-Inhaltsseite."""
     _notion_request(
@@ -1016,6 +1047,7 @@ def notion_update_lw_page(
                 resource,
                 course_notion_page_id,
                 file_upload_ids=file_upload_ids,
+                target_url=target_url,
             )
         },
     )
@@ -1041,14 +1073,6 @@ def notion_archive_page(page_id: str) -> None:
         headers=_notion_headers(),
         json={"archived": True},
     )
-
-
-def _build_bookmark_block(url: str) -> dict:
-    """Erzeugt einen Bookmark-Block für Notion."""
-    return {
-        "type": "bookmark",
-        "bookmark": {"url": url, "caption": []},
-    }
 
 
 def _chunk_text(text: str, limit: int = MAX_NOTION_RICH_TEXT_CHARS) -> list[str]:
@@ -1886,7 +1910,7 @@ def _push_url_activity(
     course_map: dict,
     course_notion_page_id: str | None,
 ) -> dict:
-    """Pusht eine URL-Aktivität als Notion-Seite mit Bookmark-Block."""
+    """Pusht eine URL-Aktivität als Notion-Seite mit Ziel-URL-Property."""
     if row["notion_id"]:
         return {"status": "skipped", "modtype": "url"}
 
@@ -1912,12 +1936,14 @@ def _push_url_activity(
     }
 
     try:
-        notion_id = notion_create_lw_page(resource, None, course_notion_page_id)
-        notion_append_page_children(notion_id, [_build_bookmark_block(target_url)])
+        notion_id = notion_create_lw_page(
+            resource,
+            None,
+            course_notion_page_id,
+            target_url=target_url,
+        )
     except Exception as e:
         log.error(f"    Notion-Fehler: {e}")
-        if "notion_id" in locals():
-            _archive_page_after_failure(notion_id)
         _mark_activity_error(conn, row["cmid"])
         return {"status": "error", "modtype": "url"}
 
@@ -1927,7 +1953,7 @@ def _push_url_activity(
         notion_id,
         file_hash=hashlib.md5(target_url.encode("utf-8")).hexdigest(),
     )
-    log.info("    ✓ URL mit Bookmark angelegt")
+    log.info("    ✓ URL-Seite angelegt (Ziel-URL gesetzt)")
     return {"status": "created", "modtype": "url"}
 
 
@@ -2052,6 +2078,26 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
             return
 
         log.info(f"{len(rows)} pushbare Aktivität(en) im Manifest.")
+        url_schema_error: tuple[str, str] | None = None
+        has_unsynced_url_rows = any(
+            raw_row[5] == "url" and raw_row[6] is None for raw_row in rows
+        )
+
+        if has_unsynced_url_rows:
+            try:
+                if not notion_lw_db_has_target_url_property():
+                    detail = (
+                        f"Pflicht-Property '{LW_TARGET_URL_PROPERTY}' (Typ URL) fehlt in "
+                        f"NOTION_LW_DB_ID={NOTION_LW_DB_ID}. Vor dem Deploy in Notion anlegen."
+                    )
+                    log.error(detail)
+                    url_schema_error = ("missing_target_url_property", detail)
+            except Exception as e:
+                detail = _build_failure_detail(exception=e)
+                log.error(
+                    f"Schema-Check für '{LW_TARGET_URL_PROPERTY}' fehlgeschlagen: {e}"
+                )
+                url_schema_error = ("target_url_schema_check_failed", detail)
 
         handlers = {
             "resource": _push_resource_activity,
@@ -2081,6 +2127,22 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
             log.info(
                 f"  Push: {row['name']} (cmid={row['cmid']}, modtype={row['modtype']})"
             )
+
+            if (
+                row["modtype"] == "url"
+                and row["notion_id"] is None
+                and url_schema_error is not None
+            ):
+                failure_reason, failure_detail = url_schema_error
+                _mark_activity_error(
+                    conn,
+                    row["cmid"],
+                    failure_reason=failure_reason,
+                    failure_detail=failure_detail,
+                )
+                counters["error"] += 1
+                counters["url_error"] += 1
+                continue
 
             handler = handlers[row["modtype"]]
             result = handler(
