@@ -1,9 +1,11 @@
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+import requests
 from bs4 import BeautifulSoup
 
 import learnweb_sync as lws
@@ -15,6 +17,34 @@ class FakeResponse:
 
     def json(self):
         return self._payload
+
+
+class FakeHttpResponse:
+    def __init__(
+        self,
+        *,
+        text: str = "",
+        url: str = "https://example.com",
+        headers: dict | None = None,
+        status_code: int = 200,
+        content: bytes | None = None,
+    ):
+        self.text = text
+        self.url = url
+        self.headers = headers or {}
+        self.status_code = status_code
+        self._content = content if content is not None else text.encode("utf-8")
+
+    def iter_content(self, chunk_size=8192):
+        for start in range(0, len(self._content), chunk_size):
+            yield self._content[start:start + chunk_size]
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+    def close(self):
+        return None
 
 
 def make_course_page(shortname: str) -> BeautifulSoup:
@@ -43,6 +73,31 @@ def make_notion_page(title: str, url: str | None, sync_content: bool = False, pa
 
 
 class LearnwebSyncTests(unittest.TestCase):
+    def test_semester_label_uses_summer_dates(self):
+        label = lws._semester_label_for_datetime(
+            datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc)
+        )
+        self.assertEqual(label, "SoSe 26")
+
+    def test_semester_label_uses_winter_dates_before_april(self):
+        label = lws._semester_label_for_datetime(
+            datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc)
+        )
+        self.assertEqual(label, "WS 25/26")
+
+    def test_semester_label_uses_berlin_timezone_for_boundaries(self):
+        label = lws._semester_label_for_datetime(
+            datetime(2026, 3, 31, 22, 30, tzinfo=timezone.utc)
+        )
+        self.assertEqual(label, "SoSe 26")
+
+    def test_semester_label_honors_explicit_override(self):
+        with mock.patch.object(lws, "CURRENT_SEMESTER_OVERRIDE", "Archiv 2024"):
+            label = lws._semester_label_for_datetime(
+                datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc)
+            )
+        self.assertEqual(label, "Archiv 2024")
+
     def test_parse_course_id_from_url(self):
         self.assertEqual(
             lws.parse_course_id_from_url("https://example.com/course/view.php?id=123"),
@@ -256,7 +311,7 @@ class LearnwebSyncTests(unittest.TestCase):
                 mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Fresh Shortname")) as load_page,
                 mock.patch.object(lws, "_extract_activities", return_value=[activity]),
             ):
-                lws.cmd_scan(session=mock.Mock(), course_map=course_map)
+                result = lws.cmd_scan(session=mock.Mock(), course_map=course_map)
 
             self.assertEqual(load_page.call_count, 1)
             self.assertEqual(course_map["1"]["shortname"], "Fresh_Shortname")
@@ -269,7 +324,194 @@ class LearnwebSyncTests(unittest.TestCase):
             finally:
                 conn.close()
 
+        self.assertEqual(result["tracked_only_courses"], [])
         self.assertEqual(row, ("cm-1", "Fresh_Shortname"))
+
+    def test_upsert_activity_updates_existing_metadata(self):
+        activity = {
+            "cmid": "cm-1",
+            "course_id": "1",
+            "course_name": "Course 1",
+            "course_shortname": "Old_Shortname",
+            "modtype": "resource",
+            "name": "Lecture 1",
+            "section": "General",
+            "view_url": "https://example.com/mod/resource/view.php?id=cm-1",
+        }
+        updated_activity = {
+            **activity,
+            "course_name": "Course 1 updated",
+            "course_shortname": "Fresh_Shortname",
+            "name": "Lecture 1 revised",
+            "section": "Week 1",
+            "view_url": "https://example.com/mod/resource/view.php?id=cm-1&redirect=1",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    self.assertTrue(lws.upsert_activity(conn, activity))
+                    self.assertFalse(lws.upsert_activity(conn, updated_activity))
+                    conn.commit()
+                    row = conn.execute(
+                        """
+                        SELECT course_name, course_shortname, modtype, name, section, view_url
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(
+            row,
+            (
+                "Course 1 updated",
+                "Fresh_Shortname",
+                "resource",
+                "Lecture 1 revised",
+                "Week 1",
+                "https://example.com/mod/resource/view.php?id=cm-1&redirect=1",
+            ),
+        )
+
+    def test_extract_folder_files_returns_sorted_pluginfile_links_only(self):
+        soup = BeautifulSoup(
+            """
+            <div>
+              <a href="/pluginfile.php/42/mod_folder/content/0/Zeta.pdf">Zeta.pdf</a>
+              <a href="https://example.com/pluginfile.php/42/mod_folder/content/0/Alpha.pdf">Alpha.pdf</a>
+              <a href="/mod/folder/view.php?id=123">Folder overview</a>
+              <a href="/pluginfile.php/42/mod_folder/content/0/Alpha.pdf">Alpha.pdf</a>
+            </div>
+            """,
+            "html.parser",
+        )
+
+        with mock.patch.object(lws, "BASE_URL", "https://example.com"):
+            result = lws._extract_folder_files(soup)
+
+        self.assertEqual(
+            result,
+            [
+                ("Alpha.pdf", "https://example.com/pluginfile.php/42/mod_folder/content/0/Alpha.pdf"),
+                ("Zeta.pdf", "https://example.com/pluginfile.php/42/mod_folder/content/0/Zeta.pdf"),
+            ],
+        )
+
+    def test_extract_url_target_prefers_redirect_target(self):
+        session = mock.Mock()
+        session.get.return_value = FakeHttpResponse(
+            url="https://external.example.com/resource",
+            headers={"Content-Type": "text/html"},
+            text="<html></html>",
+        )
+
+        target = lws._extract_url_target(
+            session,
+            "https://example.com/mod/url/view.php?id=cm-1",
+        )
+
+        self.assertEqual(target, "https://external.example.com/resource")
+
+    def test_extract_page_content_normalizes_text_and_ignores_chrome(self):
+        session = mock.Mock()
+        session.get.return_value = FakeHttpResponse(
+            url="https://example.com/mod/page/view.php?id=cm-1",
+            headers={"Content-Type": "text/html"},
+            text="""
+            <html>
+              <body>
+                <div id="region-main">
+                  <div class="activity-header">Header</div>
+                  <div class="box generalbox">
+                    <p>First paragraph.</p>
+                    <script>ignored()</script>
+                    <p>Second   paragraph.</p>
+                  </div>
+                </div>
+              </body>
+            </html>
+            """,
+        )
+
+        content = lws._extract_page_content(
+            session,
+            "https://example.com/mod/page/view.php?id=cm-1",
+        )
+
+        self.assertEqual(content, "First paragraph.\nSecond paragraph.")
+
+    def test_build_lw_page_properties_sets_auto_semester_label(self):
+        with mock.patch.object(lws, "_semester_label_for_datetime", return_value="SoSe 26"):
+            properties = lws._build_lw_page_properties(
+                {
+                    "cmid": "cm-1",
+                    "course_id": "1",
+                    "name": "Lecture 1",
+                    "file_name": "slides.pdf",
+                    "course_shortname": "Course_1",
+                },
+                "course-page",
+                file_upload_ids="upload-1",
+            )
+
+        self.assertEqual(properties["Quell-Semester"], {"select": {"name": "SoSe 26"}})
+
+    def test_cmd_scan_reports_active_course_without_pushable_resources(self):
+        course_map = {
+            "1": {
+                "name": "Active Course",
+                "shortname": "AFW-2026_1",
+                "notion_page_id": "page-1",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+        activities = [
+            {
+                "cmid": "cm-1",
+                "course_id": "1",
+                "course_name": "Active Course",
+                "modtype": "quiz",
+                "name": "Quiz 1",
+                "section": "General",
+                "view_url": "https://example.com/mod/quiz/view.php?id=cm-1",
+            },
+            {
+                "cmid": "cm-2",
+                "course_id": "1",
+                "course_name": "Active Course",
+                "modtype": "forum",
+                "name": "Forum 1",
+                "section": "General",
+                "view_url": "https://example.com/mod/forum/view.php?id=cm-2",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with (
+                mock.patch.object(lws, "DB_PATH", db_path),
+                mock.patch.object(lws, "_load_course_page", return_value=make_course_page("AFW-2026_1")),
+                mock.patch.object(lws, "_extract_activities", return_value=activities),
+            ):
+                result = lws.cmd_scan(session=mock.Mock(), course_map=course_map)
+
+        self.assertEqual(
+            result["tracked_only_courses"],
+            [
+                {
+                    "course_id": "1",
+                    "shortname": "AFW-2026_1",
+                    "total_activities": 2,
+                    "modtype_counts": {"forum": 1, "quiz": 1},
+                }
+            ],
+        )
 
     def test_cmd_push_uses_db_shortname_fallback_and_skips_conflicts(self):
         course_map = {
@@ -365,6 +607,513 @@ class LearnwebSyncTests(unittest.TestCase):
         self.assertEqual(captured_resources[0][0]["course_shortname"], "DB_Shortname")
         self.assertEqual(captured_resources[0][2], "page-1")
         self.assertEqual(synced_rows, [("1", "notion-page")])
+
+    def test_cmd_push_creates_folder_page_with_multiple_uploads(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+        folder_files = [
+            ("Alpha.pdf", "https://example.com/pluginfile.php/alpha"),
+            ("Beta.pdf", "https://example.com/pluginfile.php/beta"),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "folder-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "folder",
+                            "Literatur",
+                            "Week 1",
+                            "https://example.com/mod/folder/view.php?id=folder-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                captured_calls = []
+
+                def fake_create_lw_page(resource, upload_ids, course_page_id):
+                    captured_calls.append((resource, upload_ids, course_page_id))
+                    return "folder-page"
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=BeautifulSoup("<html></html>", "html.parser")),
+                    mock.patch.object(lws, "_extract_folder_files", return_value=folder_files),
+                    mock.patch.object(
+                        lws,
+                        "_download_file_url",
+                        side_effect=[(b"alpha", "Alpha.pdf"), (b"beta", "Beta.pdf")],
+                    ),
+                    mock.patch.object(lws, "notion_upload_file", side_effect=["upload-1", "upload-2"]),
+                    mock.patch.object(lws, "notion_create_lw_page", side_effect=fake_create_lw_page),
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT notion_id, file_hash, file_name, status FROM resources WHERE cmid = ?",
+                    ("folder-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(len(captured_calls), 1)
+        self.assertEqual(captured_calls[0][0]["display_name"], "Week 1 — Literatur")
+        self.assertEqual(captured_calls[0][1], ["upload-1", "upload-2"])
+        self.assertEqual(captured_calls[0][2], "course-page")
+        self.assertEqual(row[0], "folder-page")
+        self.assertEqual(row[1], lws._folder_fingerprint(folder_files))
+        self.assertEqual(row[2], '["Alpha.pdf", "Beta.pdf"]')
+        self.assertEqual(row[3], "synced")
+
+    def test_cmd_push_updates_existing_folder_page_when_fingerprint_changes(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+        folder_files = [
+            ("Alpha.pdf", "https://example.com/pluginfile.php/alpha"),
+            ("Beta.pdf", "https://example.com/pluginfile.php/beta"),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, notion_id, file_hash, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "folder-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "folder",
+                            "Literatur",
+                            "Week 1",
+                            "https://example.com/mod/folder/view.php?id=folder-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "folder-page",
+                            "old-hash",
+                            "synced",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=BeautifulSoup("<html></html>", "html.parser")),
+                    mock.patch.object(lws, "_extract_folder_files", return_value=folder_files),
+                    mock.patch.object(
+                        lws,
+                        "_download_file_url",
+                        side_effect=[(b"alpha", "Alpha.pdf"), (b"beta", "Beta.pdf")],
+                    ),
+                    mock.patch.object(lws, "notion_upload_file", side_effect=["upload-1", "upload-2"]),
+                    mock.patch.object(lws, "notion_update_lw_page") as update_page,
+                    mock.patch.object(lws, "notion_create_lw_page") as create_page,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT notion_id, file_hash, status FROM resources WHERE cmid = ?",
+                    ("folder-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        create_page.assert_not_called()
+        update_page.assert_called_once()
+        self.assertEqual(update_page.call_args.args[0], "folder-page")
+        self.assertEqual(update_page.call_args.args[2], ["upload-1", "upload-2"])
+        self.assertEqual(row, ("folder-page", lws._folder_fingerprint(folder_files), "synced"))
+
+    def test_cmd_push_skips_unchanged_folder_page(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+        folder_files = [("Alpha.pdf", "https://example.com/pluginfile.php/alpha")]
+        fingerprint = lws._folder_fingerprint(folder_files)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, notion_id, file_hash, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "folder-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "folder",
+                            "Literatur",
+                            "Week 1",
+                            "https://example.com/mod/folder/view.php?id=folder-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "folder-page",
+                            fingerprint,
+                            "synced",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=BeautifulSoup("<html></html>", "html.parser")),
+                    mock.patch.object(lws, "_extract_folder_files", return_value=folder_files),
+                    mock.patch.object(lws, "_download_file_url", side_effect=AssertionError("unexpected download")),
+                    mock.patch.object(lws, "notion_update_lw_page") as update_page,
+                    mock.patch.object(lws, "notion_create_lw_page") as create_page,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+        create_page.assert_not_called()
+        update_page.assert_not_called()
+
+    def test_cmd_push_marks_folder_error_without_changing_page_on_failed_upload(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+        folder_files = [("Alpha.pdf", "https://example.com/pluginfile.php/alpha")]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, notion_id, file_hash, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "folder-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "folder",
+                            "Literatur",
+                            "Week 1",
+                            "https://example.com/mod/folder/view.php?id=folder-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "folder-page",
+                            "old-hash",
+                            "synced",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=BeautifulSoup("<html></html>", "html.parser")),
+                    mock.patch.object(lws, "_extract_folder_files", return_value=folder_files),
+                    mock.patch.object(lws, "_download_file_url", return_value=(b"alpha", "Alpha.pdf")),
+                    mock.patch.object(lws, "notion_upload_file", return_value=None),
+                    mock.patch.object(lws, "notion_update_lw_page") as update_page,
+                    mock.patch.object(lws, "notion_create_lw_page") as create_page,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT notion_id, status FROM resources WHERE cmid = ?",
+                    ("folder-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        create_page.assert_not_called()
+        update_page.assert_not_called()
+        self.assertEqual(row, ("folder-page", "error"))
+
+    def test_cmd_push_creates_url_page_with_bookmark_block(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "url-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "url",
+                            "External Material",
+                            "General",
+                            "https://example.com/mod/url/view.php?id=url-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_extract_url_target", return_value="https://external.example.com/doc"),
+                    mock.patch.object(lws, "notion_create_lw_page", return_value="url-page"),
+                    mock.patch.object(lws, "notion_append_page_children") as append_children,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT notion_id, status FROM resources WHERE cmid = ?",
+                    ("url-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        append_children.assert_called_once()
+        self.assertEqual(
+            append_children.call_args.args[1],
+            [lws._build_bookmark_block("https://external.example.com/doc")],
+        )
+        self.assertEqual(row, ("url-page", "synced"))
+
+    def test_cmd_push_creates_page_with_chunked_paragraph_blocks(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+        long_text = " ".join(["paragraph"] * 500)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "page-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "page",
+                            "Overview",
+                            "General",
+                            "https://example.com/mod/page/view.php?id=page-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_extract_page_content", return_value=long_text),
+                    mock.patch.object(lws, "notion_create_lw_page", return_value="page-page"),
+                    mock.patch.object(lws, "notion_append_page_children") as append_children,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT notion_id, status FROM resources WHERE cmid = ?",
+                    ("page-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        blocks = append_children.call_args.args[1]
+        self.assertGreater(len(blocks), 1)
+        self.assertTrue(all(block["type"] == "paragraph" for block in blocks))
+        self.assertTrue(
+            all(
+                len(block["paragraph"]["rich_text"][0]["text"]["content"]) <= lws.MAX_NOTION_RICH_TEXT_CHARS
+                for block in blocks
+            )
+        )
+        self.assertEqual(row, ("page-page", "synced"))
+
+    def test_cmd_push_marks_page_error_when_text_is_empty(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "course-page",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "page-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "page",
+                            "Overview",
+                            "General",
+                            "https://example.com/mod/page/view.php?id=page-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_extract_page_content", return_value=None),
+                    mock.patch.object(lws, "notion_create_lw_page") as create_page,
+                    mock.patch.object(lws, "notion_append_page_children") as append_children,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT notion_id, status FROM resources WHERE cmid = ?",
+                    ("page-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        create_page.assert_not_called()
+        append_children.assert_not_called()
+        self.assertEqual(row, (None, "error"))
+
+    def test_cmd_run_exits_when_active_course_has_no_pushable_resources(self):
+        tracked_only_courses = [
+            {
+                "course_id": "92533",
+                "shortname": "AFW-2026_1",
+                "total_activities": 22,
+                "modtype_counts": {"forum": 7, "quiz": 5, "zoom": 10},
+            }
+        ]
+
+        with (
+            mock.patch.object(lws, "login", return_value=True),
+            mock.patch.object(lws, "cmd_sync_courses", return_value={}),
+            mock.patch.object(lws, "cmd_scan", return_value={"tracked_only_courses": tracked_only_courses}),
+            mock.patch.object(lws, "cmd_push"),
+        ):
+            with self.assertRaises(SystemExit) as exc:
+                lws.cmd_run()
+
+        self.assertEqual(exc.exception.code, 2)
 
 
 if __name__ == "__main__":

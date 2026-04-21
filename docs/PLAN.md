@@ -120,13 +120,17 @@ Der produktive Einstiegspunkt auf Railway ist `server.py` (Flask + APScheduler),
 [5. Manifest-Vergleich]  state.db (/data — Railway-Volume)
          │  neu = cmid nicht in Tabelle resources
          ▼
-[6. Datei herunterladen]  (nur modtype_resource)
-         │  GET /mod/resource/view.php?id={cmid} → pluginfile.php
+[6. Inhalt extrahieren / herunterladen]  (für pushbare Modtypes)
+         │  resource → Datei
+         │  folder   → mehrere Dateien
+         │  url      → Ziel-URL
+         │  page     → Klartext
          ▼
 [7. Notion-Seite anlegen]
-         │  POST /v1/file_uploads → file_upload_id
-         │  POST upload_url       → Datei hochladen (≤20MB)
+         │  POST /v1/file_uploads → file_upload_id(s)
+         │  POST upload_url       → Datei(en) hochladen (≤20MB je Datei)
          │  POST /v1/pages        → Seite in "Learnweb Inhalte" anlegen
+         │  PATCH /v1/blocks/...  → optionale Bookmark-/Paragraph-Blöcke anhängen
          ▼
 [8. Manifest aktualisieren]  notion_id + status='synced' in state.db
 ```
@@ -150,6 +154,8 @@ Jede Aktivität ist ein `<li data-for="cmitem" data-id="{cmid}">`:
 | modtype | Phase 1 | Phase 2+ |
 |---------|---------|---------|
 | `resource` | Metadaten im Manifest | Datei herunterladen + Notion |
+| `folder` | Metadaten im Manifest | Eine Notion-Row mit mehreren Dateianhängen |
+| `page` | Metadaten im Manifest | Klartext nach Notion-Paragrafen |
 | `forum` | Metadaten im Manifest | Forum-Seite scrapen (Phase 5) |
 | `url` | Metadaten im Manifest | Nur URL in Notion eintragen |
 | `opencast` | Metadaten im Manifest | Kein Download (Video zu groß) |
@@ -188,8 +194,8 @@ CREATE TABLE IF NOT EXISTS resources (
 | `Kurs-ID` | text | `course_id` |
 | `Kategorie` | select | Heuristik aus Aktivitätsname |
 | `Format` | select | Dateiendung (pdf/ipynb/py/pkl/zip) |
-| `Quell-Semester` | select | `CURRENT_SEMESTER` aus Env |
-| `LW Download` | file | file_upload_id nach Notion File Upload |
+| `Quell-Semester` | select | automatisch aus Datum in `Europe/Berlin` (`SoSe`: 01.04.–30.09., `WS`: 01.10.–31.03.), optionaler Override via `CURRENT_SEMESTER_OVERRIDE` |
+| `LW Download` | file | ein oder mehrere `file_upload`-Einträge nach Notion File Upload |
 | `Nr` | text | cmid |
 | `Variante` | select | Original / Solution / Template / … |
 | `KurseLearnWeb (TESTING)` | relation | Notion Page-ID aus KurseLearnWeb |
@@ -287,7 +293,7 @@ Scope erst definieren wenn Phase 3 stabil und im Einsatz.
 
 1. **`cmid` ist Wahrheit** — nie Name oder URL als Identität.
 2. **Nie lokal löschen** wenn etwas remote verschwindet — `status='removed'` setzen.
-3. **Notion-Felder nie überschreiben** wenn `notion_id` bereits gesetzt ist.
+3. **Bestehende Notion-Seiten nur gezielt patchen**: `folder` darf über denselben `notion_id` aktualisiert werden; andere Typen bleiben initial-only.
 4. **Single-Replica** — Railway-Volume erlaubt keinen Multi-Replica-Betrieb.
 5. **`state.db` nie in main-Branch** — gitignored; Persistenz über Railway-Volume.
 6. **Organizer-Skill bleibt extern** — Sync = remote→Notion. Organize = lokal→kuratiert.

@@ -1,7 +1,7 @@
 # learnweb_sync
 
 Synchronisiert LearnWeb (Moodle, Uni Münster) automatisch mit Notion.
-Neue Dateien, Folien und Ressourcen werden erkannt und als Notion-Seiten angelegt — inklusive PDF-Anhang, den Notion AI lesen kann.
+Neue `resource`-, `folder`-, `url`- und `page`-Aktivitäten werden erkannt und als Notion-Seiten angelegt. Dateien landen dabei direkt als Notion-Anhänge, sodass Notion AI sie lesen kann.
 
 ## Betrieb
 
@@ -16,7 +16,8 @@ Der Service läuft dauerhaft auf Railway und hält `state.db` in einem persisten
 2. Erkennt alle belegten Kurse und legt neue Kurse in `KurseLearnWeb` an
 3. Scrapt nur Kurse mit `SyncContent=true` auf neue Aktivitäten
 4. Vergleicht mit dem Manifest (`state.db`) — nur echte Neuigkeiten werden gemeldet
-5. Lädt neue Dateien herunter und legt Notion-Seiten an (mit PDF-Anhang)
+5. Lädt neue Dateien herunter, aggregiert Folder-Dateien in einer Notion-Row und legt Notion-Seiten für `resource`, `folder`, `url` und `page` an
+6. Meldet aktive Kurse explizit, wenn sie zwar Inhalte haben, aber keine aktuell pushbaren Inhaltstypen enthalten
 
 ## Lokales Setup (Entwicklung)
 
@@ -34,7 +35,7 @@ CLI-Befehle für lokale Läufe:
 |--------|-----------|
 | `python learnweb_sync.py sync-courses` | Alle belegten Kurse erkennen und fehlende Notion-Kursseiten anlegen |
 | `python learnweb_sync.py scan` | Nur Kurse mit `SyncContent=true` scrapen und neue Aktivitäten ausgeben |
-| `python learnweb_sync.py push` | Nur neue Ressourcen aus aktiven Kursen herunterladen + Notion-Seiten anlegen |
+| `python learnweb_sync.py push` | Pushbare Inhalte aus aktiven Kursen nach Notion schreiben bzw. aktualisieren |
 | `python learnweb_sync.py run` | `sync-courses` + `scan` + `push` in einem Schritt |
 | `python learnweb_sync.py export-zips` | Alle Kurse als ZIP-Backup herunterladen |
 
@@ -55,7 +56,8 @@ Lokal läuft der Sync direkt als CLI — kein `server.py` nötig.
 | `NOTION_TOKEN` | ✓ | Notion Integration Token |
 | `NOTION_COURSES_DB_ID` | ✓ | KurseLearnWeb-Datenbank |
 | `NOTION_LW_DB_ID` | ✓ | Learnweb Inhalte-Datenbank |
-| `CURRENT_SEMESTER` | ✓ | z.B. `SoSe 26` |
+| `CURRENT_SEMESTER_OVERRIDE` | optional | Nur für Backfills/Archivimporte, z.B. `WS 25/26` |
+| `SEMESTER_TIMEZONE` | optional | Default `Europe/Berlin`; Semesterlabel wird automatisch berechnet |
 | `COURSE_MAP` | empfohlen | JSON: `{"OR-2025_1": "OR"}` |
 | `STATE_DB_PATH` | ✓ | `/data/state.db` |
 | `STATE_LOCK_PATH` | ✓ | `/data/state.lock` |
