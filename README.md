@@ -37,6 +37,7 @@ CLI-Befehle für lokale Läufe:
 | `python learnweb_sync.py scan` | Nur Kurse mit `SyncContent=true` scrapen und neue Aktivitäten ausgeben |
 | `python learnweb_sync.py push` | Pushbare Inhalte aus aktiven Kursen nach Notion schreiben bzw. aktualisieren |
 | `python learnweb_sync.py run` | `sync-courses` + `scan` + `push` in einem Schritt |
+| `python learnweb_sync.py diagnose-resource-errors --limit 50` | Offene `resource`-Fälle read-only klassifizieren und nach Fehlergrund gruppieren |
 | `python learnweb_sync.py export-zips` | Alle Kurse als ZIP-Backup herunterladen |
 
 Lokal läuft der Sync direkt als CLI — kein `server.py` nötig.

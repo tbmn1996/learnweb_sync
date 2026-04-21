@@ -7,11 +7,13 @@ Usage:
     python learnweb_sync.py scan         # Kurse scrapen, neue Aktivitäten im Manifest erfassen
     python learnweb_sync.py push         # Pushbare Inhalte nach Notion schreiben/aktualisieren
     python learnweb_sync.py run          # scan + push [Phase 2]
+    python learnweb_sync.py diagnose-resource-errors  # Offene Resource-Fehler klassifizieren
     python learnweb_sync.py export-zips  # Alle Kurse als ZIP-Backup herunterladen
 """
 
 import argparse
 from collections import Counter
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -88,11 +90,36 @@ PUSHABLE_MODTYPES = {"resource", "folder", "url", "page"}
 MAX_NOTION_SINGLE_PART_BYTES = 20 * 1024 * 1024
 MAX_NOTION_BLOCKS_PER_REQUEST = 100
 MAX_NOTION_RICH_TEXT_CHARS = 2000
+RESOURCE_PRIMARY_DOWNLOAD_PATTERNS = (r"pluginfile\.php", r"forcedownload")
+RESOURCE_FALLBACK_DOWNLOAD_HINTS = (
+    "pluginfile.php",
+    "forcedownload",
+    "draftfile.php",
+    "tokenpluginfile.php",
+)
+RESOURCE_FAILURE_DETAIL_LIMIT = 500
+
+
+@dataclass
+class ResourceDownloadResult:
+    """Beschreibt das Ergebnis eines Resource-Probe-/Download-Versuchs."""
+
+    kind: str
+    file_bytes: bytes | None = None
+    file_name: str | None = None
+    failure_reason: str | None = None
+    failure_detail: str | None = None
+    final_url: str | None = None
 
 
 def _is_pushable_modtype(modtype: str) -> bool:
     """Gibt True zurück, wenn dieser Modtype aktuell nach Notion gepusht wird."""
     return modtype in PUSHABLE_MODTYPES
+
+
+def _now_utc_iso() -> str:
+    """Liefert den aktuellen UTC-Zeitpunkt als ISO-8601-String."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _format_modtype_counts(counts: dict[str, int]) -> str:
@@ -152,13 +179,25 @@ def init_db() -> sqlite3.Connection:
             file_hash        TEXT,               -- MD5 of downloaded file (Phase 2)
             file_name        TEXT,               -- original filename from server (Phase 2)
             notion_id        TEXT,               -- Notion page ID after push (Phase 2)
-            status           TEXT DEFAULT 'new'  -- new / synced / error / removed
+            status           TEXT DEFAULT 'new', -- new / synced / error / removed
+            failure_reason   TEXT,
+            failure_detail   TEXT,
+            last_attempt_at  TEXT,
+            retryable        INTEGER NOT NULL DEFAULT 1
         )
     """)
     # Migration: course_shortname-Spalte zu bestehenden DBs hinzufügen (einmalig)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(resources)")}
     if "course_shortname" not in existing:
         conn.execute("ALTER TABLE resources ADD COLUMN course_shortname TEXT")
+    if "failure_reason" not in existing:
+        conn.execute("ALTER TABLE resources ADD COLUMN failure_reason TEXT")
+    if "failure_detail" not in existing:
+        conn.execute("ALTER TABLE resources ADD COLUMN failure_detail TEXT")
+    if "last_attempt_at" not in existing:
+        conn.execute("ALTER TABLE resources ADD COLUMN last_attempt_at TEXT")
+    if "retryable" not in existing:
+        conn.execute("ALTER TABLE resources ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1")
     conn.commit()
     return conn
 
@@ -168,7 +207,7 @@ def upsert_activity(conn: sqlite3.Connection, activity: dict) -> bool:
     Insert a new activity or update last_seen for an existing one.
     Returns True if this activity is new (never seen before).
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = _now_utc_iso()
     existing = conn.execute(
         "SELECT cmid FROM resources WHERE cmid = ?", (activity["cmid"],)
     ).fetchone()
@@ -184,7 +223,11 @@ def upsert_activity(conn: sqlite3.Connection, activity: dict) -> bool:
                 name = ?,
                 section = ?,
                 view_url = ?,
-                last_seen = ?
+                last_seen = ?,
+                status = CASE WHEN status = 'removed' THEN 'new' ELSE status END,
+                retryable = CASE WHEN status = 'removed' THEN 1 ELSE retryable END,
+                failure_reason = CASE WHEN status = 'removed' THEN NULL ELSE failure_reason END,
+                failure_detail = CASE WHEN status = 'removed' THEN NULL ELSE failure_detail END
             WHERE cmid = ?
             """,
             (
@@ -424,12 +467,129 @@ def _response_is_html(resp: requests.Response) -> bool:
     return "text/html" in resp.headers.get("Content-Type", "")
 
 
+def _extract_html_title(soup: BeautifulSoup) -> str | None:
+    """Liest den Seitentitel aus einem HTML-Dokument."""
+    title = soup.find("title")
+    if title is None:
+        return None
+    title_text = " ".join(title.get_text(" ", strip=True).split())
+    return title_text or None
+
+
+def _truncate_failure_detail(text: str) -> str:
+    """Kürzt Failure-Details auf eine kompakte, logfreundliche Länge."""
+    if len(text) <= RESOURCE_FAILURE_DETAIL_LIMIT:
+        return text
+    return text[:RESOURCE_FAILURE_DETAIL_LIMIT - 3] + "..."
+
+
+def _build_failure_detail(
+    *,
+    final_url: str | None = None,
+    title: str | None = None,
+    exception: Exception | None = None,
+) -> str | None:
+    """Formatiert optionale Failure-Metadaten kompakt für das Manifest."""
+    parts: list[str] = []
+    if final_url:
+        parts.append(f"final_url={final_url}")
+    if title:
+        parts.append(f"title={title}")
+    if exception is not None:
+        parts.append(f"exception={type(exception).__name__}: {exception}")
+    if not parts:
+        return None
+    return _truncate_failure_detail("; ".join(parts))
+
+
+def _resource_file_result(
+    file_bytes: bytes,
+    file_name: str,
+    *,
+    final_url: str | None = None,
+) -> ResourceDownloadResult:
+    """Erzeugt ein erfolgreiches Resource-Download-Ergebnis."""
+    return ResourceDownloadResult(
+        kind="file",
+        file_bytes=file_bytes,
+        file_name=file_name,
+        final_url=final_url,
+    )
+
+
+def _resource_error_result(
+    kind: str,
+    *,
+    failure_reason: str,
+    final_url: str | None = None,
+    title: str | None = None,
+    exception: Exception | None = None,
+) -> ResourceDownloadResult:
+    """Erzeugt ein klassifiziertes Fehlerergebnis für Resource-Downloads."""
+    return ResourceDownloadResult(
+        kind=kind,
+        failure_reason=failure_reason,
+        failure_detail=_build_failure_detail(
+            final_url=final_url,
+            title=title,
+            exception=exception,
+        ),
+        final_url=final_url,
+    )
+
+
+def _extract_meta_refresh_url(soup: BeautifulSoup) -> str | None:
+    """Extrahiert ein Ziel aus einem HTML Meta-Refresh."""
+    for meta in soup.find_all("meta"):
+        http_equiv = (meta.get("http-equiv") or "").strip().lower()
+        if http_equiv != "refresh":
+            continue
+        content = (meta.get("content") or "").strip()
+        match = re.search(r"url\s*=\s*([^;]+)$", content, re.IGNORECASE)
+        if not match:
+            continue
+        return _normalize_absolute_url(match.group(1).strip(" '\""))
+    return None
+
+
+def _is_candidate_download_url(url: str) -> bool:
+    """Prüft, ob eine URL wie ein LearnWeb-Dateidownload aussieht."""
+    candidate = _normalize_absolute_url(url)
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if not _is_same_learnweb_host(candidate):
+        return False
+    haystack = f"{parsed.path}?{parsed.query}".lower()
+    return any(hint in haystack for hint in RESOURCE_FALLBACK_DOWNLOAD_HINTS)
+
+
+def _is_invalid_module_page(soup: BeautifulSoup) -> bool:
+    """Erkennt die LearnWeb-Fehlerseite für tote Course-Module."""
+    title = _extract_html_title(soup)
+    text = " ".join(soup.get_text(" ", strip=True).split())
+    return title == "Error | Learnweb" and "Invalid course module ID" in text
+
+
 def _extract_first_download_link(soup: BeautifulSoup) -> str | None:
-    """Sucht den ersten Moodle-typischen Download-Link."""
-    for pattern in (r"pluginfile\.php", r"forcedownload"):
+    """Sucht den ersten Moodle-typischen Download-Link in bevorzugter Reihenfolge."""
+    for pattern in RESOURCE_PRIMARY_DOWNLOAD_PATTERNS:
         link = soup.find("a", href=re.compile(pattern))
         if link and link.get("href"):
             return _normalize_absolute_url(link["href"])
+
+    meta_refresh_url = _extract_meta_refresh_url(soup)
+    if meta_refresh_url and _is_candidate_download_url(meta_refresh_url):
+        return meta_refresh_url
+
+    for selector in (".resourceworkaround a[href]", "#region-main a[href]", "a[href]"):
+        for link in soup.select(selector):
+            href = (link.get("href") or "").strip()
+            if not href:
+                continue
+            candidate = _normalize_absolute_url(href)
+            if _is_candidate_download_url(candidate):
+                return candidate
     return None
 
 
@@ -1158,6 +1318,7 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
             log.info(f"Scanne: {shortname} ({len(activities)} Aktivitäten)")
             new_in_course = []
             modtype_counts = Counter(activity["modtype"] for activity in activities)
+            seen_cmids: set[str] = set()
 
             if activities and not any(_is_pushable_modtype(activity["modtype"]) for activity in activities):
                 tracked_only_courses.append(
@@ -1175,10 +1336,13 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
 
             for activity in activities:
                 activity["course_shortname"] = shortname
+                seen_cmids.add(activity["cmid"])
                 is_new = upsert_activity(conn, activity)
                 if is_new:
                     new_in_course.append(activity)
                     total_new += 1
+
+            removed_count = _mark_missing_activities_removed(conn, course_id, seen_cmids)
 
             # Bestehende Einträge ohne Shortname nachfüllen (Migration alter Daten)
             conn.execute(
@@ -1187,6 +1351,8 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
             )
             conn.commit()
             log.info(f"  {len(new_in_course)} neue Aktivität(en)")
+            if removed_count:
+                log.info(f"  {removed_count} verschwundene Aktivität(en) als removed markiert")
             if new_in_course:
                 new_by_course[shortname] = new_in_course
     finally:
@@ -1317,24 +1483,75 @@ def _download_file_url(
 
 
 def _download_resource(
-    session: requests.Session, view_url: str
-) -> tuple[bytes, str] | None:
+    session: requests.Session,
+    view_url: str,
+    *,
+    _visited_urls: set[str] | None = None,
+) -> ResourceDownloadResult:
     """
     Lädt eine Moodle-Ressource herunter.
-    Gibt (file_bytes, filename) zurück, oder None bei Fehler.
+    Gibt ein strukturiertes Ergebnis mit Datei oder klassifiziertem Fehler zurück.
     """
-    resp = session.get(view_url, allow_redirects=True, stream=True, timeout=60)
-    resp.raise_for_status()
+    normalized_view_url = _normalize_absolute_url(view_url)
+    visited_urls = set(_visited_urls or ())
+    if normalized_view_url in visited_urls:
+        return _resource_error_result(
+            "retryable_error",
+            failure_reason="html_no_download_link",
+            final_url=normalized_view_url,
+        )
+    visited_urls.add(normalized_view_url)
 
-    if _response_is_html(resp):
-        soup = BeautifulSoup(resp.text, "html.parser")
-        file_url = _extract_first_download_link(soup)
-        if file_url is None:
-            log.warning(f"Kein Download-Link in HTML-Seite: {view_url}")
-            return None
-        return _download_file_url(session, file_url)
+    try:
+        resp = session.get(normalized_view_url, allow_redirects=True, stream=True, timeout=60)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        return _resource_error_result(
+            "retryable_error",
+            failure_reason="download_exception",
+            final_url=normalized_view_url,
+            exception=exc,
+        )
 
-    return _read_download_response(resp)
+    final_url = resp.url or normalized_view_url
+    if "/course/view.php" in urlparse(final_url).path:
+        return _resource_error_result(
+            "terminal_error",
+            failure_reason="redirected_to_course",
+            final_url=final_url,
+        )
+
+    if not _response_is_html(resp):
+        result = _read_download_response(resp)
+        if result is None:
+            return _resource_error_result(
+                "retryable_error",
+                failure_reason="download_unavailable",
+                final_url=final_url,
+            )
+        file_bytes, file_name = result
+        return _resource_file_result(file_bytes, file_name, final_url=final_url)
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    title = _extract_html_title(soup)
+    if _is_invalid_module_page(soup):
+        return _resource_error_result(
+            "terminal_error",
+            failure_reason="invalid_module",
+            final_url=final_url,
+            title=title,
+        )
+
+    file_url = _extract_first_download_link(soup)
+    if file_url is None:
+        return _resource_error_result(
+            "retryable_error",
+            failure_reason="html_no_download_link",
+            final_url=final_url,
+            title=title,
+        )
+
+    return _download_resource(session, file_url, _visited_urls=visited_urls)
 
 
 def notion_upload_file(file_bytes: bytes, filename: str) -> str | None:
@@ -1375,15 +1592,42 @@ def notion_upload_file(file_bytes: bytes, filename: str) -> str | None:
 
 
 def _mark_activity_error(
-    conn: sqlite3.Connection, cmid: str, *, file_name: str | None = None
+    conn: sqlite3.Connection,
+    cmid: str,
+    *,
+    file_name: str | None = None,
+    failure_reason: str | None = None,
+    failure_detail: str | None = None,
+    retryable: bool = True,
 ) -> None:
     """Markiert eine Aktivität als Fehler und aktualisiert optional den Dateinamen."""
+    now = _now_utc_iso()
     if file_name is None:
-        conn.execute("UPDATE resources SET status = 'error' WHERE cmid = ?", (cmid,))
+        conn.execute(
+            """
+            UPDATE resources
+            SET status = 'error',
+                failure_reason = ?,
+                failure_detail = ?,
+                last_attempt_at = ?,
+                retryable = ?
+            WHERE cmid = ?
+            """,
+            (failure_reason, failure_detail, now, int(retryable), cmid),
+        )
     else:
         conn.execute(
-            "UPDATE resources SET status = 'error', file_name = ? WHERE cmid = ?",
-            (file_name, cmid),
+            """
+            UPDATE resources
+            SET status = 'error',
+                file_name = ?,
+                failure_reason = ?,
+                failure_detail = ?,
+                last_attempt_at = ?,
+                retryable = ?
+            WHERE cmid = ?
+            """,
+            (file_name, failure_reason, failure_detail, now, int(retryable), cmid),
         )
     conn.commit()
 
@@ -1397,18 +1641,47 @@ def _mark_activity_synced(
     file_name: str | None = None,
 ) -> None:
     """Persistiert den erfolgreichen Sync-Zustand einer Aktivität."""
+    now = _now_utc_iso()
     conn.execute(
         """
         UPDATE resources
         SET notion_id = ?,
             file_name = ?,
             file_hash = ?,
-            status = 'synced'
+            status = 'synced',
+            failure_reason = NULL,
+            failure_detail = NULL,
+            last_attempt_at = ?,
+            retryable = 1
         WHERE cmid = ?
         """,
-        (notion_id, file_name, file_hash, cmid),
+        (notion_id, file_name, file_hash, now, cmid),
     )
     conn.commit()
+
+
+def _mark_missing_activities_removed(
+    conn: sqlite3.Connection, course_id: str, seen_cmids: set[str]
+) -> int:
+    """Markiert nicht mehr gesichtete Activities eines Kurses als entfernt."""
+    params: list[str] = [course_id]
+    query = """
+        UPDATE resources
+        SET status = 'removed',
+            failure_reason = NULL,
+            failure_detail = NULL,
+            retryable = 1
+        WHERE course_id = ?
+          AND status != 'removed'
+    """
+    if seen_cmids:
+        placeholders = ",".join("?" * len(seen_cmids))
+        query += f" AND cmid NOT IN ({placeholders})"
+        params.extend(sorted(seen_cmids))
+
+    cursor = conn.execute(query, params)
+    conn.commit()
+    return cursor.rowcount
 
 
 def _archive_page_after_failure(page_id: str) -> None:
@@ -1434,15 +1707,37 @@ def _push_resource_activity(
         result = _download_resource(session, row["view_url"])
     except Exception as e:
         log.error(f"    Download-Fehler: {e}")
-        _mark_activity_error(conn, row["cmid"])
-        return {"status": "error", "modtype": "resource"}
+        _mark_activity_error(
+            conn,
+            row["cmid"],
+            failure_reason="download_exception",
+            failure_detail=_build_failure_detail(exception=e),
+        )
+        return {"status": "retryable_error", "modtype": "resource"}
 
-    if result is None:
-        log.error(f"    Kein Download möglich – übersprungen: {row['name']}")
-        _mark_activity_error(conn, row["cmid"])
-        return {"status": "error", "modtype": "resource"}
+    if result.kind != "file":
+        detail = f" [{result.failure_reason}]" if result.failure_reason else ""
+        if result.failure_detail:
+            log.error(f"    Resource-Fehler{detail}: {result.failure_detail}")
+        else:
+            log.error(f"    Resource-Fehler{detail}: {row['name']}")
+        retryable = result.kind != "terminal_error"
+        _mark_activity_error(
+            conn,
+            row["cmid"],
+            failure_reason=result.failure_reason,
+            failure_detail=result.failure_detail,
+            retryable=retryable,
+        )
+        return {
+            "status": "retryable_error" if retryable else "terminal_error",
+            "modtype": "resource",
+            "failure_reason": result.failure_reason,
+        }
 
-    file_bytes, file_name = result
+    assert result.file_bytes is not None
+    assert result.file_name is not None
+    file_bytes, file_name = result.file_bytes, result.file_name
     file_hash = hashlib.md5(file_bytes).hexdigest()
 
     upload_id = None
@@ -1740,11 +2035,13 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
         rows = conn.execute(
             f"""
             SELECT cmid, course_id, name, view_url, course_shortname,
-                   modtype, notion_id, file_hash, file_name, section
+                   modtype, notion_id, file_hash, file_name, section,
+                   status, retryable, failure_reason, failure_detail
             FROM resources
             WHERE modtype IN ({modtype_placeholders})
               AND course_id IN ({course_placeholders})
               AND status != 'removed'
+              AND (modtype != 'resource' OR notion_id IS NOT NULL OR retryable = 1)
             ORDER BY course_id, first_seen
             """,
             [*sorted(PUSHABLE_MODTYPES), *list(active.keys())],
@@ -1773,6 +2070,10 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
             "file_hash",
             "file_name",
             "section",
+            "status",
+            "retryable",
+            "failure_reason",
+            "failure_detail",
         )
 
         for raw_row in rows:
@@ -1795,13 +2096,22 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
         conn.close()
 
     print("\n" + "=" * 60)
+    total_errors = (
+        counters["error"] + counters["retryable_error"] + counters["terminal_error"]
+    )
     print(
         "✓ Push: "
         f"{counters['created']} erstellt, "
         f"{counters['updated']} aktualisiert, "
         f"{counters['skipped']} unverändert, "
-        f"{counters['error']} Fehler"
+        f"{total_errors} Fehler"
     )
+    if counters["resource_retryable_error"] or counters["resource_terminal_error"]:
+        print(
+            "  Resource-Fehler: "
+            f"{counters['resource_retryable_error']} retryable, "
+            f"{counters['resource_terminal_error']} terminal"
+        )
     print("=" * 60 + "\n")
 
 
@@ -1828,6 +2138,88 @@ def cmd_run():
             f"{summaries}"
         )
         sys.exit(2)
+
+
+def cmd_diagnose_resource_errors(
+    session: requests.Session | None = None,
+    *,
+    limit: int = 50,
+    include_terminal: bool = False,
+) -> list[dict]:
+    """
+    Klassifiziert offene Resource-Fälle read-only mit derselben Logik wie cmd_push().
+    Gibt eine Liste diagnostizierter Einträge zurück und schreibt keine DB-Änderungen.
+    """
+    if limit <= 0:
+        log.error("limit muss > 0 sein")
+        sys.exit(1)
+
+    if session is None:
+        session = requests.Session()
+        session.headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+        if not login(session):
+            sys.exit(1)
+
+    conn = init_db()
+    try:
+        terminal_filter = "" if include_terminal else "AND retryable = 1"
+        rows = conn.execute(
+            f"""
+            SELECT cmid, course_id, course_shortname, name, view_url, status, retryable
+            FROM resources
+            WHERE modtype = 'resource'
+              AND notion_id IS NULL
+              AND status != 'removed'
+              {terminal_filter}
+            ORDER BY last_seen DESC, first_seen DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        print("\n✓ Keine offenen Resource-Fälle zur Diagnose gefunden.\n")
+        return []
+
+    columns = ("cmid", "course_id", "course_shortname", "name", "view_url", "status", "retryable")
+    diagnosed: list[dict] = []
+    counts: Counter[str] = Counter()
+
+    for raw_row in rows:
+        row = dict(zip(columns, raw_row))
+        result = _download_resource(session, row["view_url"])
+        reason = "ok" if result.kind == "file" else (result.failure_reason or "unknown")
+        counts[reason] += 1
+        diagnosed.append(
+            {
+                **row,
+                "kind": result.kind,
+                "failure_reason": reason,
+                "failure_detail": result.failure_detail,
+                "final_url": result.final_url,
+            }
+        )
+
+    print("\n" + "=" * 60)
+    print(f"✓ Diagnose: {len(diagnosed)} Resource-Fall/Fälle geprüft")
+    for reason, count in sorted(counts.items()):
+        print(f"  {reason}: {count}")
+    print("-" * 60)
+    for item in diagnosed:
+        course_shortname = item["course_shortname"] or item["course_id"]
+        print(
+            f"  [{item['failure_reason']}] {item['cmid']} "
+            f"{course_shortname} — {item['name']}"
+        )
+        if item["final_url"]:
+            print(f"    final_url: {item['final_url']}")
+        if item["failure_detail"] and item["kind"] != "file":
+            print(f"    detail: {item['failure_detail']}")
+    print("=" * 60 + "\n")
+
+    return diagnosed
 
 
 def cmd_export_zips():
@@ -1956,11 +2348,32 @@ commands:
   scan          Scrape courses with SyncContent=true, record new activities in manifest
   push          Push supported LearnWeb content to Notion pages
   run           sync-courses + scan + push in one step (for automated runs)
+  diagnose-resource-errors
+                Probe open resource rows read-only and classify failures
   export-zips   Download all courses as ZIP files (backup mode)
 """,
     )
     parser.add_argument(
-        "command", choices=["sync-courses", "scan", "push", "run", "export-zips"]
+        "command",
+        choices=[
+            "sync-courses",
+            "scan",
+            "push",
+            "run",
+            "diagnose-resource-errors",
+            "export-zips",
+        ],
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximalzahl für diagnose-resource-errors (Default: 50)",
+    )
+    parser.add_argument(
+        "--include-terminal",
+        action="store_true",
+        help="diagnose-resource-errors: auch terminal markierte Fälle erneut prüfen",
     )
     args = parser.parse_args()
 
@@ -1976,6 +2389,11 @@ commands:
         cmd_push()
     elif args.command == "run":
         cmd_run()
+    elif args.command == "diagnose-resource-errors":
+        cmd_diagnose_resource_errors(
+            limit=args.limit,
+            include_terminal=args.include_terminal,
+        )
     elif args.command == "export-zips":
         cmd_export_zips()
 

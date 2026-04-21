@@ -1,6 +1,8 @@
+import io
 import sqlite3
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -72,6 +74,19 @@ def make_notion_page(title: str, url: str | None, sync_content: bool = False, pa
     }
 
 
+def make_resource_file_result(
+    file_name: str = "file.pdf",
+    file_bytes: bytes = b"pdf-bytes",
+    final_url: str = "https://example.com/pluginfile.php/file.pdf",
+):
+    return lws.ResourceDownloadResult(
+        kind="file",
+        file_name=file_name,
+        file_bytes=file_bytes,
+        final_url=final_url,
+    )
+
+
 class LearnwebSyncTests(unittest.TestCase):
     def test_semester_label_uses_summer_dates(self):
         label = lws._semester_label_for_datetime(
@@ -109,6 +124,136 @@ class LearnwebSyncTests(unittest.TestCase):
         )
         self.assertIsNone(lws.parse_course_id_from_url(""))
         self.assertIsNone(lws.parse_course_id_from_url("https://example.com/course/view.php?foo=1"))
+
+    def test_init_db_adds_resource_diagnostic_columns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    columns = {
+                        row[1]: row for row in conn.execute("PRAGMA table_info(resources)")
+                    }
+                finally:
+                    conn.close()
+
+        self.assertIn("failure_reason", columns)
+        self.assertIn("failure_detail", columns)
+        self.assertIn("last_attempt_at", columns)
+        self.assertIn("retryable", columns)
+
+    def test_download_resource_returns_file_for_direct_redirect(self):
+        session = mock.Mock()
+        session.get.return_value = FakeHttpResponse(
+            url="https://example.com/pluginfile.php/42/file.pdf",
+            headers={
+                "Content-Type": "application/pdf",
+                "Content-Disposition": 'attachment; filename="file.pdf"',
+            },
+            content=b"pdf-bytes",
+        )
+
+        result = lws._download_resource(session, "https://example.com/mod/resource/view.php?id=cm-1")
+
+        self.assertEqual(result.kind, "file")
+        self.assertEqual(result.file_name, "file.pdf")
+        self.assertEqual(result.file_bytes, b"pdf-bytes")
+        self.assertEqual(result.final_url, "https://example.com/pluginfile.php/42/file.pdf")
+
+    def test_download_resource_follows_html_pluginfile_link(self):
+        session = mock.Mock()
+        session.get.side_effect = [
+            FakeHttpResponse(
+                url="https://example.com/mod/resource/view.php?id=cm-1",
+                headers={"Content-Type": "text/html"},
+                text="""
+                <html>
+                  <body>
+                    <a href="/pluginfile.php/42/mod_resource/content/1/file.pdf">Download</a>
+                  </body>
+                </html>
+                """,
+            ),
+            FakeHttpResponse(
+                url="https://example.com/pluginfile.php/42/mod_resource/content/1/file.pdf",
+                headers={"Content-Type": "application/pdf"},
+                content=b"pdf-bytes",
+            ),
+        ]
+
+        with mock.patch.object(lws, "BASE_URL", "https://example.com"):
+            result = lws._download_resource(session, "https://example.com/mod/resource/view.php?id=cm-1")
+
+        self.assertEqual(result.kind, "file")
+        self.assertEqual(result.file_bytes, b"pdf-bytes")
+        self.assertEqual(
+            result.final_url,
+            "https://example.com/pluginfile.php/42/mod_resource/content/1/file.pdf",
+        )
+
+    def test_download_resource_marks_invalid_module_as_terminal(self):
+        session = mock.Mock()
+        session.get.return_value = FakeHttpResponse(
+            url="https://example.com/mod/resource/view.php?id=cm-1",
+            headers={"Content-Type": "text/html"},
+            text="""
+            <html>
+              <head><title>Error | Learnweb</title></head>
+              <body>
+                <div class="box py-3 errorbox alert alert-danger">Invalid course module ID</div>
+              </body>
+            </html>
+            """,
+        )
+
+        result = lws._download_resource(session, "https://example.com/mod/resource/view.php?id=cm-1")
+
+        self.assertEqual(result.kind, "terminal_error")
+        self.assertEqual(result.failure_reason, "invalid_module")
+        self.assertIn("final_url=https://example.com/mod/resource/view.php?id=cm-1", result.failure_detail)
+
+    def test_download_resource_marks_redirect_to_course_as_terminal(self):
+        session = mock.Mock()
+        session.get.return_value = FakeHttpResponse(
+            url="https://example.com/course/view.php?id=123",
+            headers={"Content-Type": "text/html"},
+            text="<html><body>Course page</body></html>",
+        )
+
+        result = lws._download_resource(session, "https://example.com/mod/resource/view.php?id=cm-1")
+
+        self.assertEqual(result.kind, "terminal_error")
+        self.assertEqual(result.failure_reason, "redirected_to_course")
+        self.assertEqual(result.final_url, "https://example.com/course/view.php?id=123")
+
+    def test_download_resource_marks_html_without_download_link_as_retryable(self):
+        session = mock.Mock()
+        session.get.return_value = FakeHttpResponse(
+            url="https://example.com/mod/resource/view.php?id=cm-1",
+            headers={"Content-Type": "text/html"},
+            text="""
+            <html>
+              <head><title>Resource Wrapper</title></head>
+              <body><p>No downloadable file here.</p></body>
+            </html>
+            """,
+        )
+
+        result = lws._download_resource(session, "https://example.com/mod/resource/view.php?id=cm-1")
+
+        self.assertEqual(result.kind, "retryable_error")
+        self.assertEqual(result.failure_reason, "html_no_download_link")
+        self.assertIn("title=Resource Wrapper", result.failure_detail)
+
+    def test_download_resource_marks_request_exception_as_retryable(self):
+        session = mock.Mock()
+        session.get.side_effect = requests.Timeout("boom")
+
+        result = lws._download_resource(session, "https://example.com/mod/resource/view.php?id=cm-1")
+
+        self.assertEqual(result.kind, "retryable_error")
+        self.assertEqual(result.failure_reason, "download_exception")
+        self.assertIn("exception=Timeout: boom", result.failure_detail)
 
     def test_notion_query_courses_db_builds_unique_indexes_and_duplicates(self):
         payload = {
@@ -327,6 +472,73 @@ class LearnwebSyncTests(unittest.TestCase):
         self.assertEqual(result["tracked_only_courses"], [])
         self.assertEqual(row, ("cm-1", "Fresh_Shortname"))
 
+    def test_cmd_scan_marks_missing_activities_as_removed(self):
+        course_map = {
+            "1": {
+                "name": "Active Course",
+                "shortname": "Course_1",
+                "notion_page_id": "page-1",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+        live_activity = {
+            "cmid": "cm-live",
+            "course_id": "1",
+            "course_name": "Active Course",
+            "modtype": "resource",
+            "name": "Lecture 1",
+            "section": "General",
+            "view_url": "https://example.com/mod/resource/view.php?id=cm-live",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-old",
+                            "1",
+                            "Active Course",
+                            "Course_1",
+                            "resource",
+                            "Old Lecture",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-old",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Course 1")),
+                    mock.patch.object(lws, "_extract_activities", return_value=[live_activity]),
+                ):
+                    lws.cmd_scan(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT status FROM resources WHERE cmid = ?",
+                    ("cm-old",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(row, ("removed",))
+
     def test_upsert_activity_updates_existing_metadata(self):
         activity = {
             "cmid": "cm-1",
@@ -376,6 +588,62 @@ class LearnwebSyncTests(unittest.TestCase):
                 "https://example.com/mod/resource/view.php?id=cm-1&redirect=1",
             ),
         )
+
+    def test_upsert_activity_revives_removed_item_as_new_and_clears_failures(self):
+        activity = {
+            "cmid": "cm-1",
+            "course_id": "1",
+            "course_name": "Course 1",
+            "course_shortname": "Fresh_Shortname",
+            "modtype": "resource",
+            "name": "Lecture 1",
+            "section": "General",
+            "view_url": "https://example.com/mod/resource/view.php?id=cm-1",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, failure_reason,
+                             failure_detail, retryable)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Old_Shortname",
+                            "resource",
+                            "Old Lecture",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "removed",
+                            "invalid_module",
+                            "final_url=https://example.com/mod/resource/view.php?id=cm-1",
+                            0,
+                        ),
+                    )
+                    conn.commit()
+                    self.assertFalse(lws.upsert_activity(conn, activity))
+                    row = conn.execute(
+                        """
+                        SELECT status, retryable, failure_reason, failure_detail, course_shortname
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(row, ("new", 1, None, None, "Fresh_Shortname"))
 
     def test_extract_folder_files_returns_sorted_pluginfile_links_only(self):
         soup = BeautifulSoup(
@@ -589,7 +857,7 @@ class LearnwebSyncTests(unittest.TestCase):
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
-                    mock.patch.object(lws, "_download_resource", return_value=(b"pdf-bytes", "file.pdf")),
+                    mock.patch.object(lws, "_download_resource", return_value=make_resource_file_result()),
                     mock.patch.object(lws, "notion_upload_file", return_value=None),
                     mock.patch.object(lws, "notion_create_lw_page", side_effect=fake_create_lw_page),
                 ):
@@ -607,6 +875,144 @@ class LearnwebSyncTests(unittest.TestCase):
         self.assertEqual(captured_resources[0][0]["course_shortname"], "DB_Shortname")
         self.assertEqual(captured_resources[0][2], "page-1")
         self.assertEqual(synced_rows, [("1", "notion-page")])
+
+    def test_cmd_push_marks_terminal_resource_error_and_does_not_create_page(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "page-1",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(
+                        lws,
+                        "_download_resource",
+                        return_value=lws.ResourceDownloadResult(
+                            kind="terminal_error",
+                            failure_reason="invalid_module",
+                            failure_detail="final_url=https://example.com/mod/resource/view.php?id=cm-1",
+                            final_url="https://example.com/mod/resource/view.php?id=cm-1",
+                        ),
+                    ),
+                    mock.patch.object(lws, "notion_create_lw_page") as create_page,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    """
+                    SELECT notion_id, status, retryable, failure_reason
+                    FROM resources WHERE cmid = ?
+                    """,
+                    ("cm-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        create_page.assert_not_called()
+        self.assertEqual(row, (None, "error", 0, "invalid_module"))
+
+    def test_cmd_push_skips_terminal_unsynced_resource_rows(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "page-1",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, retryable,
+                             failure_reason)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "DB_Shortname",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "error",
+                            0,
+                            "invalid_module",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(
+                        lws,
+                        "_download_resource",
+                        side_effect=AssertionError("terminal resources should be filtered"),
+                    ),
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT status, retryable, failure_reason FROM resources WHERE cmid = ?",
+                    ("cm-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(row, ("error", 0, "invalid_module"))
 
     def test_cmd_push_creates_folder_page_with_multiple_uploads(self):
         course_map = {
@@ -1093,6 +1499,103 @@ class LearnwebSyncTests(unittest.TestCase):
         create_page.assert_not_called()
         append_children.assert_not_called()
         self.assertEqual(row, (None, "error"))
+
+    def test_cmd_diagnose_resource_errors_groups_results_and_stays_read_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "error",
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, retryable,
+                             failure_reason)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-2",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 2",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-2",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "error",
+                            0,
+                            "invalid_module",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                stdout = io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    mock.patch.object(
+                        lws,
+                        "_download_resource",
+                        return_value=lws.ResourceDownloadResult(
+                            kind="retryable_error",
+                            failure_reason="html_no_download_link",
+                            failure_detail="final_url=https://example.com/mod/resource/view.php?id=cm-1",
+                            final_url="https://example.com/mod/resource/view.php?id=cm-1",
+                        ),
+                    ) as diagnose_download,
+                ):
+                    diagnosed = lws.cmd_diagnose_resource_errors(
+                        session=mock.Mock(),
+                        limit=10,
+                    )
+
+            conn = sqlite3.connect(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT cmid, status, retryable FROM resources ORDER BY cmid"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(diagnose_download.call_count, 1)
+        self.assertEqual(len(diagnosed), 1)
+        self.assertIn("html_no_download_link: 1", stdout.getvalue())
+        self.assertIn("cm-1", stdout.getvalue())
+        self.assertEqual(rows, [("cm-1", "error", 1), ("cm-2", "error", 0)])
+
+    def test_main_dispatches_diagnose_resource_errors_with_flags(self):
+        with (
+            mock.patch.object(lws, "cmd_diagnose_resource_errors") as diagnose_cmd,
+            mock.patch("sys.argv", ["learnweb_sync.py", "diagnose-resource-errors", "--limit", "7", "--include-terminal"]),
+        ):
+            lws.main()
+
+        diagnose_cmd.assert_called_once_with(limit=7, include_terminal=True)
 
     def test_cmd_run_exits_when_active_course_has_no_pushable_resources(self):
         tracked_only_courses = [
