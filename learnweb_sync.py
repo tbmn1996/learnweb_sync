@@ -91,6 +91,9 @@ PUSHABLE_MODTYPES = {"resource", "folder", "url", "page"}
 MAX_NOTION_SINGLE_PART_BYTES = 20 * 1024 * 1024
 MAX_NOTION_BLOCKS_PER_REQUEST = 100
 MAX_NOTION_RICH_TEXT_CHARS = 2000
+RESOURCE_STATUS_DEFERRED = "deferred"
+DEFERRED_FAILURE_REASON = "not_yet_available"
+MISSING_VIEW_URL_FAILURE_REASON = "missing_view_url"
 RESOURCE_PRIMARY_DOWNLOAD_PATTERNS = (r"pluginfile\.php", r"forcedownload")
 RESOURCE_FALLBACK_DOWNLOAD_HINTS = (
     "pluginfile.php",
@@ -99,6 +102,12 @@ RESOURCE_FALLBACK_DOWNLOAD_HINTS = (
     "tokenpluginfile.php",
 )
 RESOURCE_FAILURE_DETAIL_LIMIT = 500
+RESTRICTED_ACTIVITY_DATA_REGION = "availabilityinfo"
+RESTRICTED_ACTIVITY_CLASSES = (
+    "activity-availability",
+    "availabilityinfo",
+    "isrestricted",
+)
 
 
 @dataclass
@@ -180,7 +189,7 @@ def init_db() -> sqlite3.Connection:
             file_hash        TEXT,               -- MD5 of downloaded file (Phase 2)
             file_name        TEXT,               -- original filename from server (Phase 2)
             notion_id        TEXT,               -- Notion page ID after push (Phase 2)
-            status           TEXT DEFAULT 'new', -- new / synced / error / removed
+            status           TEXT DEFAULT 'new', -- new / synced / error / removed / deferred
             failure_reason   TEXT,
             failure_detail   TEXT,
             last_attempt_at  TEXT,
@@ -210,10 +219,77 @@ def upsert_activity(conn: sqlite3.Connection, activity: dict) -> bool:
     """
     now = _now_utc_iso()
     existing = conn.execute(
-        "SELECT cmid FROM resources WHERE cmid = ?", (activity["cmid"],)
+        "SELECT status, notion_id, view_url FROM resources WHERE cmid = ?",
+        (activity["cmid"],),
     ).fetchone()
+    is_restricted = bool(activity.get("restricted"))
+    failure_detail = _build_availability_failure_detail(activity.get("availability_text"))
 
     if existing:
+        status, notion_id, _existing_view_url = existing
+        if notion_id and is_restricted:
+            conn.execute(
+                """
+                UPDATE resources
+                SET course_id = ?,
+                    course_name = ?,
+                    course_shortname = ?,
+                    modtype = ?,
+                    name = ?,
+                    section = ?,
+                    view_url = CASE WHEN ? IS NULL THEN view_url ELSE ? END,
+                    last_seen = ?
+                WHERE cmid = ?
+                """,
+                (
+                    activity["course_id"],
+                    activity["course_name"],
+                    activity.get("course_shortname"),
+                    activity["modtype"],
+                    activity["name"],
+                    activity["section"],
+                    activity.get("view_url"),
+                    activity.get("view_url"),
+                    now,
+                    activity["cmid"],
+                ),
+            )
+            return False
+
+        if is_restricted and status in {"new", "error", RESOURCE_STATUS_DEFERRED, "removed"}:
+            conn.execute(
+                """
+                UPDATE resources
+                SET course_id = ?,
+                    course_name = ?,
+                    course_shortname = ?,
+                    modtype = ?,
+                    name = ?,
+                    section = ?,
+                    view_url = NULL,
+                    last_seen = ?,
+                    status = ?,
+                    retryable = 1,
+                    failure_reason = ?,
+                    failure_detail = ?
+                WHERE cmid = ?
+                """,
+                (
+                    activity["course_id"],
+                    activity["course_name"],
+                    activity.get("course_shortname"),
+                    activity["modtype"],
+                    activity["name"],
+                    activity["section"],
+                    now,
+                    RESOURCE_STATUS_DEFERRED,
+                    DEFERRED_FAILURE_REASON,
+                    failure_detail,
+                    activity["cmid"],
+                ),
+            )
+            return False
+
         conn.execute(
             """
             UPDATE resources
@@ -225,10 +301,10 @@ def upsert_activity(conn: sqlite3.Connection, activity: dict) -> bool:
                 section = ?,
                 view_url = ?,
                 last_seen = ?,
-                status = CASE WHEN status = 'removed' THEN 'new' ELSE status END,
-                retryable = CASE WHEN status = 'removed' THEN 1 ELSE retryable END,
-                failure_reason = CASE WHEN status = 'removed' THEN NULL ELSE failure_reason END,
-                failure_detail = CASE WHEN status = 'removed' THEN NULL ELSE failure_detail END
+                status = CASE WHEN status IN ('removed', ?) THEN 'new' ELSE status END,
+                retryable = CASE WHEN status IN ('removed', ?) THEN 1 ELSE retryable END,
+                failure_reason = CASE WHEN status IN ('removed', ?) THEN NULL ELSE failure_reason END,
+                failure_detail = CASE WHEN status IN ('removed', ?) THEN NULL ELSE failure_detail END
             WHERE cmid = ?
             """,
             (
@@ -240,11 +316,43 @@ def upsert_activity(conn: sqlite3.Connection, activity: dict) -> bool:
                 activity["section"],
                 activity["view_url"],
                 now,
+                RESOURCE_STATUS_DEFERRED,
+                RESOURCE_STATUS_DEFERRED,
+                RESOURCE_STATUS_DEFERRED,
+                RESOURCE_STATUS_DEFERRED,
                 activity["cmid"],
             ),
         )
         return False
     else:
+        if is_restricted:
+            conn.execute(
+                """
+                INSERT INTO resources
+                    (cmid, course_id, course_name, course_shortname, modtype, name,
+                     section, view_url, first_seen, last_seen, status, failure_reason,
+                     failure_detail, retryable)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    activity["cmid"],
+                    activity["course_id"],
+                    activity["course_name"],
+                    activity.get("course_shortname"),
+                    activity["modtype"],
+                    activity["name"],
+                    activity["section"],
+                    None,
+                    now,
+                    now,
+                    RESOURCE_STATUS_DEFERRED,
+                    DEFERRED_FAILURE_REASON,
+                    failure_detail,
+                    1,
+                ),
+            )
+            return True
+
         conn.execute(
             """
             INSERT INTO resources
@@ -363,6 +471,23 @@ def _load_course_page(session: requests.Session, course_url: str) -> BeautifulSo
     return BeautifulSoup(resp.text, "html.parser")
 
 
+def _extract_restriction_info(li) -> tuple[bool, str | None]:
+    """Erkennt explizite Restriction-Hinweise in einer Activity-Card."""
+    restriction_node = li.find(attrs={"data-region": RESTRICTED_ACTIVITY_DATA_REGION})
+    if restriction_node is None:
+        for node in li.find_all(["div", "span"], class_=True):
+            classes = set(node.get("class", []))
+            if any(marker in classes for marker in RESTRICTED_ACTIVITY_CLASSES):
+                restriction_node = node
+                break
+
+    if restriction_node is None:
+        return False, None
+
+    availability_text = " ".join(restriction_node.get_text(" ", strip=True).split())
+    return True, availability_text or None
+
+
 def _extract_activities(soup: BeautifulSoup, course: dict) -> list[dict]:
     """Extrahiert alle Aktivitäten aus einem bereits geladenen Kurs-HTML."""
     activities = []
@@ -401,11 +526,16 @@ def _extract_activities(soup: BeautifulSoup, course: dict) -> list[dict]:
                 name = name[:197] + "..."
 
             # Link to the activity page
+            is_restricted, availability_text = _extract_restriction_info(li)
             link = li.find("a", class_=re.compile(r"aalink|stretched-link"))
             if link and link.get("href"):
                 view_url = link["href"]
                 if not view_url.startswith("http"):
                     view_url = BASE_URL + view_url
+                is_restricted = False
+                availability_text = None
+            elif is_restricted:
+                view_url = None
             else:
                 view_url = f"{BASE_URL}/mod/{modtype}/view.php?id={cmid}"
 
@@ -418,6 +548,8 @@ def _extract_activities(soup: BeautifulSoup, course: dict) -> list[dict]:
                     "name": name,
                     "section": section_name,
                     "view_url": view_url,
+                    "restricted": is_restricted,
+                    "availability_text": availability_text,
                 }
             )
 
@@ -482,6 +614,11 @@ def _truncate_failure_detail(text: str) -> str:
     if len(text) <= RESOURCE_FAILURE_DETAIL_LIMIT:
         return text
     return text[:RESOURCE_FAILURE_DETAIL_LIMIT - 3] + "..."
+
+
+def _build_availability_failure_detail(availability_text: str | None) -> str:
+    """Formatiert Restriction-Details für deferred Rows."""
+    return _truncate_failure_detail(f"availability={availability_text or 'restricted'}")
 
 
 def _build_failure_detail(
@@ -1716,6 +1853,30 @@ def _archive_page_after_failure(page_id: str) -> None:
         log.warning(f"    Konnte Notion-Seite nach Fehler nicht archivieren: {archive_error}")
 
 
+def _guard_missing_view_url(conn: sqlite3.Connection, row: dict) -> dict | None:
+    """Fängt manifestseitig fehlende view_url defensiv vor Handler-Logik ab."""
+    if row.get("view_url"):
+        return None
+
+    if row.get("status") == RESOURCE_STATUS_DEFERRED:
+        log.info("    Überspringe deferred-Aktivität ohne view_url")
+        return {"status": "skipped", "modtype": row["modtype"], "reason": "no_view_url"}
+
+    log.error("    Ungültiger Manifest-Zustand: fehlende view_url")
+    _mark_activity_error(
+        conn,
+        row["cmid"],
+        failure_reason=MISSING_VIEW_URL_FAILURE_REASON,
+        failure_detail="view_url is NULL",
+        retryable=False,
+    )
+    return {
+        "status": "error",
+        "modtype": row["modtype"],
+        "failure_reason": MISSING_VIEW_URL_FAILURE_REASON,
+    }
+
+
 def _push_resource_activity(
     conn: sqlite3.Connection,
     session: requests.Session,
@@ -1724,6 +1885,10 @@ def _push_resource_activity(
     course_notion_page_id: str | None,
 ) -> dict:
     """Pusht eine einzelne Resource-Aktivität nach Notion."""
+    guard_result = _guard_missing_view_url(conn, row)
+    if guard_result is not None:
+        return guard_result
+
     if row["notion_id"]:
         return {"status": "skipped", "modtype": "resource"}
 
@@ -1809,6 +1974,10 @@ def _push_folder_activity(
     course_notion_page_id: str | None,
 ) -> dict:
     """Pusht oder aktualisiert eine Folder-Aktivität atomar."""
+    guard_result = _guard_missing_view_url(conn, row)
+    if guard_result is not None:
+        return guard_result
+
     try:
         soup = _fetch_activity_soup(session, row["view_url"])
         folder_files = _extract_folder_files(soup)
@@ -1911,6 +2080,10 @@ def _push_url_activity(
     course_notion_page_id: str | None,
 ) -> dict:
     """Pusht eine URL-Aktivität als Notion-Seite mit Ziel-URL-Property."""
+    guard_result = _guard_missing_view_url(conn, row)
+    if guard_result is not None:
+        return guard_result
+
     if row["notion_id"]:
         return {"status": "skipped", "modtype": "url"}
 
@@ -1965,6 +2138,10 @@ def _push_page_activity(
     course_notion_page_id: str | None,
 ) -> dict:
     """Pusht eine Page-Aktivität als Notion-Seite mit Paragraph-Blöcken."""
+    guard_result = _guard_missing_view_url(conn, row)
+    if guard_result is not None:
+        return guard_result
+
     if row["notion_id"]:
         return {"status": "skipped", "modtype": "page"}
 
@@ -2066,7 +2243,7 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
             FROM resources
             WHERE modtype IN ({modtype_placeholders})
               AND course_id IN ({course_placeholders})
-              AND status != 'removed'
+              AND status NOT IN ('removed', 'deferred')
               AND (modtype != 'resource' OR notion_id IS NOT NULL OR retryable = 1)
             ORDER BY course_id, first_seen
             """,
@@ -2231,7 +2408,7 @@ def cmd_diagnose_resource_errors(
             FROM resources
             WHERE modtype = 'resource'
               AND notion_id IS NULL
-              AND status != 'removed'
+              AND status = 'error'
               {terminal_filter}
             ORDER BY last_seen DESC, first_seen DESC
             LIMIT ?

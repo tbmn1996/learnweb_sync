@@ -87,6 +87,67 @@ def make_resource_file_result(
     )
 
 
+def make_activity(**overrides):
+    activity = {
+        "cmid": "cm-1",
+        "course_id": "1",
+        "course_name": "Course 1",
+        "course_shortname": "Course_1",
+        "modtype": "resource",
+        "name": "Lecture 1",
+        "section": "General",
+        "view_url": "https://example.com/mod/resource/view.php?id=cm-1",
+        "restricted": False,
+        "availability_text": None,
+    }
+    activity.update(overrides)
+    return activity
+
+
+def make_course_page_with_activity(
+    *,
+    cmid: str = "cm-1",
+    modtype: str = "resource",
+    name: str = "Lecture 1",
+    href: str | None = "https://example.com/mod/resource/view.php?id=cm-1",
+    restriction_text: str | None = None,
+    restriction_with_data_region: bool = True,
+    restriction_classes: str = "activity-availability availabilityinfo isrestricted",
+) -> BeautifulSoup:
+    link_html = ""
+    if href:
+        link_html = (
+            f'<a class="aalink stretched-link" href="{href}">'
+            f'<span class="instancename">{name}</span>'
+            "</a>"
+        )
+
+    restriction_html = ""
+    if restriction_text is not None:
+        data_region = ' data-region="availabilityinfo"' if restriction_with_data_region else ""
+        restriction_html = (
+            f'<div class="{restriction_classes}"{data_region}>{restriction_text}</div>'
+        )
+
+    html = f"""
+    <html>
+      <body>
+        <li class="section course-section" data-sectionname="General">
+          <ul data-for="cmlist">
+            <li data-for="cmitem" data-id="{cmid}" class="activity {modtype} modtype_{modtype}">
+              <div data-activityname="{name}">
+                {link_html}
+              </div>
+              {restriction_html}
+            </li>
+          </ul>
+        </li>
+      </body>
+    </html>
+    """
+    return BeautifulSoup(html, "html.parser")
+
+
 class LearnwebSyncTests(unittest.TestCase):
     def test_semester_label_uses_summer_dates(self):
         label = lws._semester_label_for_datetime(
@@ -254,6 +315,65 @@ class LearnwebSyncTests(unittest.TestCase):
         self.assertEqual(result.kind, "retryable_error")
         self.assertEqual(result.failure_reason, "download_exception")
         self.assertIn("exception=Timeout: boom", result.failure_detail)
+
+    def test_extract_activities_marks_restricted_resource_as_deferred(self):
+        soup = make_course_page_with_activity(
+            href=None,
+            restriction_text="Available from 15 May 2026, 10:00 AM",
+        )
+
+        with mock.patch.object(lws, "BASE_URL", "https://example.com"):
+            activities = lws._extract_activities(soup, {"course_id": "1", "name": "Course 1"})
+
+        self.assertEqual(len(activities), 1)
+        self.assertTrue(activities[0]["restricted"])
+        self.assertEqual(activities[0]["availability_text"], "Available from 15 May 2026, 10:00 AM")
+        self.assertIsNone(activities[0]["view_url"])
+
+    def test_extract_activities_detects_restriction_via_css_class_fallback(self):
+        soup = make_course_page_with_activity(
+            href=None,
+            restriction_text="Available next week",
+            restriction_with_data_region=False,
+            restriction_classes="availabilityinfo",
+        )
+
+        with mock.patch.object(lws, "BASE_URL", "https://example.com"):
+            activities = lws._extract_activities(soup, {"course_id": "1", "name": "Course 1"})
+
+        self.assertEqual(len(activities), 1)
+        self.assertTrue(activities[0]["restricted"])
+        self.assertEqual(activities[0]["availability_text"], "Available next week")
+        self.assertIsNone(activities[0]["view_url"])
+
+    def test_extract_activities_keeps_legacy_fallback_for_linkless_unrestricted_activity(self):
+        soup = make_course_page_with_activity(href=None, restriction_text=None)
+
+        with mock.patch.object(lws, "BASE_URL", "https://example.com"):
+            activities = lws._extract_activities(soup, {"course_id": "1", "name": "Course 1"})
+
+        self.assertEqual(len(activities), 1)
+        self.assertFalse(activities[0]["restricted"])
+        self.assertIsNone(activities[0]["availability_text"])
+        self.assertEqual(
+            activities[0]["view_url"],
+            "https://example.com/mod/resource/view.php?id=cm-1",
+        )
+
+    def test_extract_activities_marks_restricted_folder_as_deferred(self):
+        soup = make_course_page_with_activity(
+            modtype="folder",
+            href=None,
+            restriction_text="Available from 1 June 2026",
+        )
+
+        with mock.patch.object(lws, "BASE_URL", "https://example.com"):
+            activities = lws._extract_activities(soup, {"course_id": "1", "name": "Course 1"})
+
+        self.assertEqual(len(activities), 1)
+        self.assertEqual(activities[0]["modtype"], "folder")
+        self.assertTrue(activities[0]["restricted"])
+        self.assertIsNone(activities[0]["view_url"])
 
     def test_notion_query_courses_db_builds_unique_indexes_and_duplicates(self):
         payload = {
@@ -539,6 +659,56 @@ class LearnwebSyncTests(unittest.TestCase):
 
         self.assertEqual(row, ("removed",))
 
+    def test_cmd_scan_persists_restricted_activity_as_deferred(self):
+        course_map = {
+            "1": {
+                "name": "Active Course",
+                "shortname": "Course_1",
+                "notion_page_id": "page-1",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+        restricted_activity = make_activity(
+            view_url=None,
+            restricted=True,
+            availability_text="Available from 15 May 2026, 10:00 AM",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                with (
+                    mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Course 1")),
+                    mock.patch.object(lws, "_extract_activities", return_value=[restricted_activity]),
+                ):
+                    result = lws.cmd_scan(session=mock.Mock(), course_map=course_map)
+
+                conn = sqlite3.connect(db_path)
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT status, retryable, failure_reason, failure_detail, view_url
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(result["total_new"], 1)
+        self.assertEqual(
+            row,
+            (
+                lws.RESOURCE_STATUS_DEFERRED,
+                1,
+                lws.DEFERRED_FAILURE_REASON,
+                "availability=Available from 15 May 2026, 10:00 AM",
+                None,
+            ),
+        )
+
     def test_upsert_activity_updates_existing_metadata(self):
         activity = {
             "cmid": "cm-1",
@@ -644,6 +814,359 @@ class LearnwebSyncTests(unittest.TestCase):
                     conn.close()
 
         self.assertEqual(row, ("new", 1, None, None, "Fresh_Shortname"))
+
+    def test_upsert_activity_inserts_new_restricted_as_deferred(self):
+        activity = make_activity(
+            view_url=None,
+            restricted=True,
+            availability_text="Available from 1 June 2026",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    self.assertTrue(lws.upsert_activity(conn, activity))
+                    conn.commit()
+                    row = conn.execute(
+                        """
+                        SELECT status, retryable, failure_reason, failure_detail, view_url
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(
+            row,
+            (
+                lws.RESOURCE_STATUS_DEFERRED,
+                1,
+                lws.DEFERRED_FAILURE_REASON,
+                "availability=Available from 1 June 2026",
+                None,
+            ),
+        )
+
+    def test_upsert_activity_heals_existing_redirected_to_course_row_to_deferred(self):
+        activity = make_activity(
+            view_url=None,
+            restricted=True,
+            availability_text="Available from 1 June 2026",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, failure_reason,
+                             failure_detail, retryable)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "error",
+                            "redirected_to_course",
+                            "final_url=https://example.com/course/view.php?id=1",
+                            0,
+                        ),
+                    )
+                    conn.commit()
+                    self.assertFalse(lws.upsert_activity(conn, activity))
+                    row = conn.execute(
+                        """
+                        SELECT status, retryable, failure_reason, failure_detail, view_url
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(
+            row,
+            (
+                lws.RESOURCE_STATUS_DEFERRED,
+                1,
+                lws.DEFERRED_FAILURE_REASON,
+                "availability=Available from 1 June 2026",
+                None,
+            ),
+        )
+
+    def test_upsert_activity_heals_removed_row_to_deferred_when_restricted(self):
+        activity = make_activity(
+            view_url=None,
+            restricted=True,
+            availability_text="Available from 1 June 2026",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "removed",
+                        ),
+                    )
+                    conn.commit()
+                    self.assertFalse(lws.upsert_activity(conn, activity))
+                    row = conn.execute(
+                        """
+                        SELECT status, retryable, failure_reason, failure_detail, view_url
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(
+            row,
+            (
+                lws.RESOURCE_STATUS_DEFERRED,
+                1,
+                lws.DEFERRED_FAILURE_REASON,
+                "availability=Available from 1 June 2026",
+                None,
+            ),
+        )
+
+    def test_upsert_activity_truncates_long_availability_text_in_failure_detail(self):
+        activity = make_activity(
+            view_url=None,
+            restricted=True,
+            availability_text="x" * 600,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    lws.upsert_activity(conn, activity)
+                    conn.commit()
+                    failure_detail = conn.execute(
+                        "SELECT failure_detail FROM resources WHERE cmid = ?",
+                        ("cm-1",),
+                    ).fetchone()[0]
+                finally:
+                    conn.close()
+
+        self.assertEqual(len(failure_detail), lws.RESOURCE_FAILURE_DETAIL_LIMIT)
+        self.assertTrue(failure_detail.startswith("availability="))
+        self.assertTrue(failure_detail.endswith("..."))
+
+    def test_upsert_activity_transitions_deferred_back_to_new_when_link_appears(self):
+        activity = make_activity()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, failure_reason,
+                             failure_detail, retryable)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            None,
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            lws.RESOURCE_STATUS_DEFERRED,
+                            lws.DEFERRED_FAILURE_REASON,
+                            "availability=Available from 1 June 2026",
+                            1,
+                        ),
+                    )
+                    conn.commit()
+                    self.assertFalse(lws.upsert_activity(conn, activity))
+                    row = conn.execute(
+                        """
+                        SELECT status, retryable, failure_reason, failure_detail, view_url
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(
+            row,
+            (
+                "new",
+                1,
+                None,
+                None,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+            ),
+        )
+
+    def test_upsert_activity_chained_heal_error_to_deferred_to_new(self):
+        restricted_activity = make_activity(
+            view_url=None,
+            restricted=True,
+            availability_text="Available from 1 June 2026",
+        )
+        live_activity = make_activity()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, failure_reason,
+                             failure_detail, retryable)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "error",
+                            "redirected_to_course",
+                            "final_url=https://example.com/course/view.php?id=1",
+                            0,
+                        ),
+                    )
+                    conn.commit()
+                    self.assertFalse(lws.upsert_activity(conn, restricted_activity))
+                    self.assertFalse(lws.upsert_activity(conn, live_activity))
+                    row = conn.execute(
+                        """
+                        SELECT status, retryable, failure_reason, failure_detail, view_url
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(
+            row,
+            (
+                "new",
+                1,
+                None,
+                None,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+            ),
+        )
+
+    def test_upsert_activity_keeps_synced_row_when_later_restricted(self):
+        activity = make_activity(
+            name="Lecture 1 updated",
+            view_url=None,
+            restricted=True,
+            availability_text="Available from 1 June 2026",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, notion_id, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "notion-1",
+                            "synced",
+                        ),
+                    )
+                    conn.commit()
+                    self.assertFalse(lws.upsert_activity(conn, activity))
+                    row = conn.execute(
+                        """
+                        SELECT status, notion_id, failure_reason, failure_detail, view_url, name
+                        FROM resources WHERE cmid = ?
+                        """,
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(
+            row,
+            (
+                "synced",
+                "notion-1",
+                None,
+                None,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+                "Lecture 1 updated",
+            ),
+        )
 
     def test_extract_folder_files_returns_sorted_pluginfile_links_only(self):
         soup = BeautifulSoup(
@@ -1075,6 +1598,166 @@ class LearnwebSyncTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(row, ("error", 0, "invalid_module"))
+
+    def test_cmd_push_skips_deferred_rows_across_modtypes(self):
+        course_map = {
+            "1": {
+                "shortname": "Course_1",
+                "notion_page_id": "page-1",
+                "sync_content": True,
+                "url": "https://example.com/course/view.php?id=1",
+                "conflict": False,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, retryable,
+                             failure_reason)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "folder",
+                            "Folder 1",
+                            "General",
+                            None,
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            lws.RESOURCE_STATUS_DEFERRED,
+                            1,
+                            lws.DEFERRED_FAILURE_REASON,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with (
+                    mock.patch.object(lws, "NOTION_TOKEN", "token"),
+                    mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(
+                        lws,
+                        "_fetch_activity_soup",
+                        side_effect=AssertionError("deferred rows should be filtered"),
+                    ) as fetch_soup,
+                ):
+                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT status, failure_reason FROM resources WHERE cmid = ?",
+                    ("cm-1",),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        fetch_soup.assert_not_called()
+        self.assertEqual(row, (lws.RESOURCE_STATUS_DEFERRED, lws.DEFERRED_FAILURE_REASON))
+
+    def test_push_resource_activity_skips_deferred_row_without_view_url(self):
+        row = {
+            "cmid": "cm-1",
+            "course_id": "1",
+            "name": "Lecture 1",
+            "view_url": None,
+            "course_shortname": "Course_1",
+            "modtype": "resource",
+            "notion_id": None,
+            "status": lws.RESOURCE_STATUS_DEFERRED,
+        }
+
+        with mock.patch.object(
+            lws,
+            "_download_resource",
+            side_effect=AssertionError("deferred rows should not download"),
+        ):
+            result = lws._push_resource_activity(
+                conn=mock.Mock(),
+                session=mock.Mock(),
+                row=row,
+                course_map={},
+                course_notion_page_id=None,
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["modtype"], "resource")
+
+    def test_push_resource_activity_marks_missing_view_url_as_error_for_nondeferred_row(self):
+        row = {
+            "cmid": "cm-1",
+            "course_id": "1",
+            "name": "Lecture 1",
+            "view_url": None,
+            "course_shortname": "Course_1",
+            "modtype": "resource",
+            "notion_id": None,
+            "status": "error",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            None,
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "error",
+                        ),
+                    )
+                    conn.commit()
+                    with mock.patch.object(
+                        lws,
+                        "_download_resource",
+                        side_effect=AssertionError("missing view_url should guard before download"),
+                    ):
+                        result = lws._push_resource_activity(
+                            conn=conn,
+                            session=mock.Mock(),
+                            row=row,
+                            course_map={},
+                            course_notion_page_id=None,
+                        )
+                    saved_row = conn.execute(
+                        "SELECT status, retryable, failure_reason, failure_detail FROM resources WHERE cmid = ?",
+                        ("cm-1",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["failure_reason"], lws.MISSING_VIEW_URL_FAILURE_REASON)
+        self.assertEqual(
+            saved_row,
+            ("error", 0, lws.MISSING_VIEW_URL_FAILURE_REASON, "view_url is NULL"),
+        )
 
     def test_cmd_push_creates_folder_page_with_multiple_uploads(self):
         course_map = {
@@ -1847,6 +2530,82 @@ class LearnwebSyncTests(unittest.TestCase):
         self.assertIn("html_no_download_link: 1", stdout.getvalue())
         self.assertIn("cm-1", stdout.getvalue())
         self.assertEqual(rows, [("cm-1", "error", 1), ("cm-2", "error", 0)])
+
+    def test_cmd_diagnose_resource_errors_excludes_deferred_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, retryable)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-1",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 1",
+                            "General",
+                            "https://example.com/mod/resource/view.php?id=cm-1",
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            "error",
+                            1,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO resources
+                            (cmid, course_id, course_name, course_shortname, modtype, name,
+                             section, view_url, first_seen, last_seen, status, retryable,
+                             failure_reason)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "cm-2",
+                            "1",
+                            "Course 1",
+                            "Course_1",
+                            "resource",
+                            "Lecture 2",
+                            "General",
+                            None,
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                            lws.RESOURCE_STATUS_DEFERRED,
+                            1,
+                            lws.DEFERRED_FAILURE_REASON,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with mock.patch.object(
+                    lws,
+                    "_download_resource",
+                    return_value=lws.ResourceDownloadResult(
+                        kind="retryable_error",
+                        failure_reason="html_no_download_link",
+                        failure_detail="final_url=https://example.com/mod/resource/view.php?id=cm-1",
+                        final_url="https://example.com/mod/resource/view.php?id=cm-1",
+                    ),
+                ) as diagnose_download:
+                    diagnosed = lws.cmd_diagnose_resource_errors(
+                        session=mock.Mock(),
+                        limit=10,
+                        include_terminal=True,
+                    )
+
+        self.assertEqual(diagnose_download.call_count, 1)
+        self.assertEqual(len(diagnosed), 1)
+        self.assertEqual(diagnosed[0]["cmid"], "cm-1")
 
     def test_main_dispatches_diagnose_resource_errors_with_flags(self):
         with (
