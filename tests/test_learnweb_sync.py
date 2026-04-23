@@ -186,6 +186,64 @@ class LearnwebSyncTests(unittest.TestCase):
         self.assertIsNone(lws.parse_course_id_from_url(""))
         self.assertIsNone(lws.parse_course_id_from_url("https://example.com/course/view.php?foo=1"))
 
+    def test_get_courses_ignores_course_urls_outside_enrolled_course_navigation(self):
+        session = mock.Mock()
+        session.get.return_value = FakeHttpResponse(
+            text="""
+            <html>
+              <body>
+                <li class="sub-sub-menu-item">
+                  <a href="https://example.com/course/view.php?id=123" title="Real Course">RC-2026</a>
+                </li>
+                <div class="townsquareletter_body postletter_body">
+                  <p class="MsoPlainText">
+                    <a href="https://example.com/course/view.php?id=76689">
+                      https://example.com/course/view.php?id=76689
+                    </a>
+                  </p>
+                </div>
+              </body>
+            </html>
+            """
+        )
+
+        with mock.patch.object(lws, "BASE_URL", "https://example.com"):
+            courses = lws.get_courses(session)
+
+        self.assertEqual(
+            courses,
+            [
+                {
+                    "course_id": "123",
+                    "name": "Real Course",
+                    "url": "https://example.com/course/view.php?id=123",
+                }
+            ],
+        )
+
+    def test_load_course_page_rejects_enrolment_options_redirect(self):
+        session = mock.Mock()
+        session.get.return_value = FakeHttpResponse(
+            url="https://example.com/enrol/index.php?id=76689",
+            text="""
+            <html>
+              <body>
+                <ol class="breadcrumb">
+                  <li>Home</li>
+                  <li>Enrolment options</li>
+                </ol>
+                <h2>Enrolment options</h2>
+              </body>
+            </html>
+            """,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Keine belegte Kursseite"):
+            lws._load_course_page(
+                session,
+                "https://example.com/course/view.php?id=76689",
+            )
+
     def test_init_db_adds_resource_diagnostic_columns(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"

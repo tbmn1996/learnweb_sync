@@ -398,12 +398,56 @@ def _normalize_lw_id(value: str) -> str:
     return re.sub(r"[^\w\-]", "_", value).strip("_")
 
 
+def _html_text(node) -> str:
+    """Normalisiert sichtbaren HTML-Text für robuste Strukturprüfungen."""
+    return " ".join(node.get_text(" ", strip=True).split()) if node else ""
+
+
 def parse_course_id_from_url(url: str) -> str | None:
     """Extrahiert die Moodle-Kurs-ID aus einer LearnWeb-URL."""
     if not url:
         return None
     match = re.search(r"[?&]id=(\d+)", url)
     return match.group(1) if match else None
+
+
+def _has_html_class(node, class_name: str) -> bool:
+    """Prüft BeautifulSoup-Klassen defensiv auch bei String-/Listenvarianten."""
+    classes = node.get("class", []) if node else []
+    if isinstance(classes, str):
+        classes = classes.split()
+    return class_name in classes
+
+
+def _is_enrolled_course_link(a) -> bool:
+    """
+    Erkennt echte Kurslinks aus der LearnWeb-Kursnavigation.
+
+    Auf /my/index.php kommen zusätzlich Course-URLs in Townsquare/Postletter-
+    Nachrichtentexten vor. Diese sind keine belegten Kurse und dürfen nicht
+    als Kursseiten in Notion angelegt werden.
+    """
+    return a.find_parent(
+        lambda tag: getattr(tag, "name", None) == "li"
+        and _has_html_class(tag, "sub-sub-menu-item")
+    ) is not None
+
+
+def _is_enrolment_page(soup: BeautifulSoup, final_url: str) -> bool:
+    """Erkennt Moodle-Einschreibeseiten, die keine zugänglichen Kursseiten sind."""
+    if "/enrol/index.php" in urlparse(final_url).path:
+        return True
+
+    breadcrumbs = [
+        _html_text(li)
+        for li in soup.select("ol.breadcrumb li, nav[aria-label='Navigation bar'] li")
+    ]
+    headings = {_html_text(node) for node in soup.find_all(["h1", "h2"])}
+    return (
+        bool(breadcrumbs)
+        and breadcrumbs[-1] == "Enrolment options"
+        and "Enrolment options" in headings
+    )
 
 
 def login(session: requests.Session) -> bool:
@@ -443,6 +487,8 @@ def get_courses(session: requests.Session) -> list[dict]:
     seen_ids = set()
 
     for a in soup.find_all("a", href=re.compile(r"/course/view\.php\?id=\d+")):
+        if not _is_enrolled_course_link(a):
+            continue
         href = a["href"]
         m = re.search(r"id=(\d+)", href)
         if not m:
@@ -468,7 +514,11 @@ def _load_course_page(session: requests.Session, course_url: str) -> BeautifulSo
     """Lädt eine Kursseite und gibt den geparsten HTML-Baum zurück."""
     resp = session.get(course_url)
     resp.raise_for_status()
-    return BeautifulSoup(resp.text, "html.parser")
+    final_url = resp.url or course_url
+    soup = BeautifulSoup(resp.text, "html.parser")
+    if _is_enrolment_page(soup, final_url):
+        raise RuntimeError(f"Keine belegte Kursseite: {course_url} -> {final_url}")
+    return soup
 
 
 def _extract_restriction_info(li) -> tuple[bool, str | None]:
