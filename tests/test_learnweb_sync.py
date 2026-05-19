@@ -1293,6 +1293,114 @@ class LearnwebSyncTests(unittest.TestCase):
 
         self.assertEqual(content, "First paragraph.\nSecond paragraph.")
 
+    def test_extract_iframe_target_opencast_embed(self):
+        """Gibt die externe Opencast/Electures-URL aus einem iframe zurück."""
+        html = """
+        <html><body>
+          <div id="region-main">
+            <iframe src="https://dash.uni.electures.uni-muenster.de/livestream/embed_viewer/series/abc123"></iframe>
+          </div>
+        </body></html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        result = lws._extract_iframe_target(soup)
+        self.assertEqual(
+            result,
+            "https://dash.uni.electures.uni-muenster.de/livestream/embed_viewer/series/abc123",
+        )
+
+    def test_extract_iframe_target_ignores_same_host_iframe(self):
+        """Ignoriert iframes, die auf denselben LearnWeb-Host zeigen."""
+        with mock.patch.object(lws, "BASE_URL", "https://www.uni-muenster.de/LearnWeb/learnweb2"):
+            html = """
+            <html><body>
+              <iframe src="https://www.uni-muenster.de/LearnWeb/learnweb2/mod/page/view.php?id=42"></iframe>
+            </body></html>
+            """
+            soup = BeautifulSoup(html, "html.parser")
+            result = lws._extract_iframe_target(soup)
+        self.assertIsNone(result)
+
+    def test_extract_iframe_target_returns_none_when_no_iframe(self):
+        """Gibt None zurück, wenn die Seite keinen iframe enthält."""
+        html = "<html><body><p>Nur Text, kein Embed.</p></body></html>"
+        soup = BeautifulSoup(html, "html.parser")
+        result = lws._extract_iframe_target(soup)
+        self.assertIsNone(result)
+
+    def test_push_page_activity_sets_target_url_when_iframe_present(self):
+        """
+        Wenn die Seite einen externen iframe enthält, wird notion_create_lw_page
+        mit target_url=<iframe-URL> aufgerufen und der Rückgabe-Status ist
+        {"status": "created", "modtype": "page", "via": "iframe"}.
+        """
+        iframe_url = "https://dash.uni.electures.uni-muenster.de/livestream/embed_viewer/series/abc123"
+        iframe_html = f"""
+        <html><body>
+          <div id="region-main">
+            <iframe src="{iframe_url}"></iframe>
+          </div>
+        </body></html>
+        """
+        row = {
+            "cmid": "page-iframe-1",
+            "course_id": "1",
+            "name": "Livestream",
+            "view_url": "https://www.uni-muenster.de/LearnWeb/learnweb2/mod/page/view.php?id=4023900",
+            "course_shortname": "Course_1",
+            "notion_id": None,
+        }
+        course_map = {
+            "1": {"shortname": "Course_1", "notion_page_id": "course-page", "sync_content": True},
+        }
+
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            with mock.patch.object(lws, "DB_PATH", db_path):
+                conn = lws.init_db()
+                conn.execute(
+                    """
+                    INSERT INTO resources
+                        (cmid, course_id, course_name, course_shortname, modtype, name,
+                         section, view_url, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["cmid"], row["course_id"], "Course 1", row["course_shortname"],
+                        "page", row["name"], "General", row["view_url"],
+                        "2026-01-01T00:00:00", "2026-01-01T00:00:00",
+                    ),
+                )
+                conn.commit()
+
+                fake_soup = BeautifulSoup(iframe_html, "html.parser")
+
+                with (
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=fake_soup),
+                    mock.patch.object(lws, "notion_create_lw_page", return_value="notion-page-1") as create_page,
+                    mock.patch.object(lws, "_mark_activity_synced") as mark_synced,
+                ):
+                    result = lws._push_page_activity(conn, mock.Mock(), row, course_map, "course-page")
+
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["modtype"], "page")
+        self.assertEqual(result["via"], "iframe")
+        create_page.assert_called_once_with(
+            {
+                "cmid": "page-iframe-1",
+                "course_id": "1",
+                "name": "Livestream",
+                "course_shortname": "Course_1",
+            },
+            None,
+            "course-page",
+            target_url=iframe_url,
+        )
+        mark_synced.assert_called_once()
+
     def test_build_lw_page_properties_sets_auto_semester_label(self):
         with mock.patch.object(lws, "_semester_label_for_datetime", return_value="SoSe 26"):
             properties = lws._build_lw_page_properties(
@@ -2233,12 +2341,16 @@ class LearnwebSyncTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+                _page_soup = BeautifulSoup(
+                    "<html><body><div class='box generalbox'><p>Page content</p></div></body></html>",
+                    "html.parser",
+                )
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
                     mock.patch.object(lws, "notion_lw_db_has_target_url_property", return_value=False),
                     mock.patch.object(lws, "_extract_url_target") as extract_url_target,
-                    mock.patch.object(lws, "_extract_page_content", return_value="Page content"),
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=_page_soup),
                     mock.patch.object(lws, "notion_create_lw_page", return_value="page-page") as create_page,
                     mock.patch.object(lws, "notion_append_page_children") as append_children,
                 ):
@@ -2341,12 +2453,16 @@ class LearnwebSyncTests(unittest.TestCase):
                         raise requests.HTTPError("HTTP 400")
                     return "page-page"
 
+                _page_soup = BeautifulSoup(
+                    "<html><body><div class='box generalbox'><p>Page content</p></div></body></html>",
+                    "html.parser",
+                )
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
                     mock.patch.object(lws, "notion_lw_db_has_target_url_property", return_value=True),
                     mock.patch.object(lws, "_extract_url_target", return_value="https://external.example.com/doc"),
-                    mock.patch.object(lws, "_extract_page_content", return_value="Page content"),
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=_page_soup),
                     mock.patch.object(lws, "notion_create_lw_page", side_effect=fake_create_lw_page),
                     mock.patch.object(lws, "notion_append_page_children") as append_children,
                 ):
@@ -2410,10 +2526,14 @@ class LearnwebSyncTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+                _long_soup = BeautifulSoup(
+                    f"<html><body><div class='box generalbox'><p>{long_text}</p></div></body></html>",
+                    "html.parser",
+                )
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
-                    mock.patch.object(lws, "_extract_page_content", return_value=long_text),
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=_long_soup),
                     mock.patch.object(lws, "notion_create_lw_page", return_value="page-page"),
                     mock.patch.object(lws, "notion_append_page_children") as append_children,
                 ):
@@ -2479,10 +2599,12 @@ class LearnwebSyncTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+                # Leere Soup: kein Text, kein iframe → _push_page_activity läuft in den Fehler-Pfad
+                _empty_soup = BeautifulSoup("<html><body></body></html>", "html.parser")
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
-                    mock.patch.object(lws, "_extract_page_content", return_value=None),
+                    mock.patch.object(lws, "_fetch_activity_soup", return_value=_empty_soup),
                     mock.patch.object(lws, "notion_create_lw_page") as create_page,
                     mock.patch.object(lws, "notion_append_page_children") as append_children,
                 ):
