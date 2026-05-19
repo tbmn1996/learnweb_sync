@@ -14,3 +14,7 @@ logs/
 
 downloads/
 docs/example_course_source_code.html
+
+# Lokale Throwaway-Recon-Skripte (Live-Tests, Debug-Dumps)
+recon.py
+recon_*.py
