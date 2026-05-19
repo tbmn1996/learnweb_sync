@@ -1012,7 +1012,7 @@ def _notion_request(method: str, url: str, **kwargs) -> requests.Response:
 
 def notion_query_courses_db() -> dict[str, dict]:
     """
-    Liest alle Einträge aus KurseLearnWeb (TESTING).
+    Liest alle Einträge aus KurseLearnWeb.
     Gibt eindeutige Indizes und Konfliktmengen für course_id und LW-ID zurück.
     Paginierung wird automatisch behandelt (bis zu 100 Einträge pro Request).
     """
@@ -1229,7 +1229,7 @@ def _build_lw_page_properties(
         }
 
     if course_notion_page_id:
-        properties["KurseLearnWeb (TESTING)"] = {
+        properties["KurseLearnWeb"] = {
             "relation": [{"id": course_notion_page_id}]
         }
 
@@ -1244,7 +1244,7 @@ def notion_create_lw_page(
     target_url: str | None = None,
 ) -> str:
     """
-    Legt eine neue Seite in Learnweb Inhalte (TESTING) an.
+    Legt eine neue Seite in Learnweb Inhalte an.
     Gibt die Notion page_id zurück.
     """
     resp = _notion_request(
