@@ -507,6 +507,13 @@ def get_courses(session: requests.Session) -> list[dict]:
         courses.append({"course_id": course_id, "name": name, "url": href})
 
     log.info(f"Found {len(courses)} course(s) on dashboard")
+
+    if not courses:
+        log.warning(
+            "Keine Kurse in der LearnWeb-Navigation gefunden — Theme-Selektor "
+            "'sub-sub-menu-item' evtl. obsolet"
+        )
+
     return courses
 
 
@@ -608,12 +615,13 @@ def _extract_activities(soup: BeautifulSoup, course: dict) -> list[dict]:
 
 def get_course_activities(
     session: requests.Session, course: dict
-) -> tuple[str, list[dict]]:
+) -> tuple[str | None, list[dict]]:
     """
     Lädt eine Kursseite und gibt (shortname, activities) zurück.
 
-    shortname: Moodle-Kürzel aus dem Breadcrumb (z.B. "Inf1-2025_2")
-    activities: Liste aller Aktivitäten auf der Seite
+    shortname: Moodle-Kürzel aus dem Breadcrumb (z.B. "Inf1-2025_2") oder None
+               falls nicht eingeschrieben (Enrolment-Redirect)
+    activities: Liste aller Aktivitäten auf der Seite (leer bei Fehler)
 
     HTML-Struktur:
         <li class="section course-section" data-sectionname="Vorlesungsunterlagen">
@@ -628,7 +636,11 @@ def get_course_activities(
 
     Labels (modtype_label) werden übersprungen – reine Layout-Elemente ohne Inhalt.
     """
-    soup = _load_course_page(session, course["url"])
+    try:
+        soup = _load_course_page(session, course["url"])
+    except RuntimeError as e:
+        log.warning(f"  Kurs übersprungen (nicht eingeschrieben): {e}")
+        return None, []
     shortname = _extract_shortname(soup)
     return shortname, _extract_activities(soup, course)
 
