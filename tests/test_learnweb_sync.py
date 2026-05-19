@@ -2872,6 +2872,56 @@ class LearnwebSyncTests(unittest.TestCase):
 
         self.assertEqual(exc.exception.code, 2)
 
+    def test_get_course_activities_skips_enrolment_redirect(self):
+        """
+        get_course_activities soll RuntimeError aus _load_course_page abfangen
+        und (None, []) zurückgeben (statt Fehler zu propagieren).
+        """
+        course = {"course_id": "1", "name": "Test", "url": "https://example.com/course/1"}
+        session = mock.Mock()
+
+        with mock.patch.object(
+            lws, "_load_course_page", side_effect=RuntimeError("Keine belegte Kursseite: Enrolment-Options-Redirect")
+        ):
+            with self.assertLogs(lws.log, level="WARNING") as log_context:
+                shortname, activities = lws.get_course_activities(session, course)
+
+        # Assertion: (None, []) zurückgeben
+        self.assertIsNone(shortname)
+        self.assertEqual(activities, [])
+        # Assertion: warning wurde geloggt
+        self.assertTrue(
+            any("Kurs übersprungen (nicht eingeschrieben)" in msg for msg in log_context.output),
+            f"Expected warning message not found in {log_context.output}",
+        )
+
+    def test_get_courses_warns_when_empty(self):
+        """
+        get_courses soll ein WARNING loggen wenn keine Kurse gefunden werden.
+        """
+        html_without_courses = """
+        <html>
+          <body>
+            <!-- No <a> tags matching /course/view.php?id=\d+ with enrolled class -->
+          </body>
+        </html>
+        """
+        session = mock.Mock()
+        session.get = mock.Mock(
+            return_value=FakeHttpResponse(text=html_without_courses, url="https://example.com/my/index.php")
+        )
+
+        with self.assertLogs(lws.log, level="WARNING") as log_context:
+            result = lws.get_courses(session)
+
+        # Assertion: leere Liste
+        self.assertEqual(result, [])
+        # Assertion: warning wurde geloggt
+        self.assertTrue(
+            any("Keine Kurse in der LearnWeb-Navigation gefunden" in msg for msg in log_context.output),
+            f"Expected warning message not found in {log_context.output}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
