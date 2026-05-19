@@ -887,11 +887,36 @@ def _extract_url_target(session: requests.Session, view_url: str) -> str | None:
     return None
 
 
-def _extract_page_content(session: requests.Session, view_url: str) -> str | None:
+def _extract_iframe_target(soup: BeautifulSoup) -> str | None:
     """
-    Extrahiert den bereinigten Klartext einer Moodle-Page-Aktivität.
+    Sucht in einem bereits geparsten HTML-Baum nach dem ersten externen
+    iframe-Embed und gibt dessen src-URL zurück (z. B. Opencast/Electures).
+    Interne LearnWeb-iframes und ungültige Schemata werden übersprungen.
     """
-    soup = _fetch_activity_soup(session, view_url)
+    for iframe in soup.select("iframe[src]"):
+        src = (iframe.get("src") or "").strip()
+        # Leere oder nicht navigierbare Quellen ignorieren
+        if not src or src == "about:blank" or src.startswith("javascript:"):
+            continue
+        candidate = _normalize_absolute_url(src)
+        parsed = urlparse(candidate)
+        # Nur http/https zulassen
+        if parsed.scheme not in {"http", "https"}:
+            continue
+        # Iframes, die auf denselben LearnWeb-Host zeigen, überspringen
+        if _is_same_learnweb_host(candidate):
+            continue
+        return candidate
+    return None
+
+
+def _extract_page_text_from_soup(soup: BeautifulSoup) -> str | None:
+    """
+    Extrahiert den bereinigten Klartext einer Moodle-Page-Aktivität
+    aus einem bereits geparsten HTML-Baum. Wird von _extract_page_content
+    als dünner Wrapper aufgerufen, kann aber auch direkt mit einem
+    vorhandenen soup-Objekt genutzt werden (kein zusätzlicher HTTP-Call).
+    """
     selectors = (
         ".box.generalbox",
         ".activity-description",
@@ -936,6 +961,15 @@ def _extract_page_content(session: requests.Session, view_url: str) -> str | Non
 
     text = "\n".join(lines).strip()
     return text or None
+
+
+def _extract_page_content(session: requests.Session, view_url: str) -> str | None:
+    """
+    Dünner Wrapper: lädt die Seite und delegiert die Textextraktion an
+    _extract_page_text_from_soup. Bestehende Aufrufer bleiben kompatibel.
+    """
+    soup = _fetch_activity_soup(session, view_url)
+    return _extract_page_text_from_soup(soup)
 
 
 # ── Notion API ────────────────────────────────────────────────────────────────
@@ -2251,21 +2285,11 @@ def _push_page_activity(
     if row["notion_id"]:
         return {"status": "skipped", "modtype": "page"}
 
+    # Seite einmal laden — soup wird für iframe- und Text-Pfad geteilt
     try:
-        page_text = _extract_page_content(session, row["view_url"])
+        soup = _fetch_activity_soup(session, row["view_url"])
     except Exception as e:
         log.error(f"    Page-Extraktionsfehler: {e}")
-        _mark_activity_error(conn, row["cmid"])
-        return {"status": "error", "modtype": "page"}
-
-    if not page_text:
-        log.error("    Page enthält keinen nutzbaren Text")
-        _mark_activity_error(conn, row["cmid"])
-        return {"status": "error", "modtype": "page"}
-
-    blocks = _build_paragraph_blocks(page_text)
-    if not blocks:
-        log.error("    Page erzeugt keine Notion-Blöcke")
         _mark_activity_error(conn, row["cmid"])
         return {"status": "error", "modtype": "page"}
 
@@ -2277,6 +2301,44 @@ def _push_page_activity(
             course_map, row["course_id"], row["course_shortname"]
         ),
     }
+
+    # ── iframe-Pfad: externe Embeds (z. B. Opencast / Electures) ──────────────
+    iframe_target = _extract_iframe_target(soup)
+    if iframe_target:
+        try:
+            notion_id = notion_create_lw_page(
+                resource,
+                None,
+                course_notion_page_id,
+                target_url=iframe_target,
+            )
+        except Exception as e:
+            log.error(f"    Notion-Fehler: {e}")
+            _mark_activity_error(conn, row["cmid"])
+            return {"status": "error", "modtype": "page"}
+
+        _mark_activity_synced(
+            conn,
+            row["cmid"],
+            notion_id,
+            file_hash=hashlib.md5(iframe_target.encode("utf-8")).hexdigest(),
+        )
+        log.info("    ✓ Page mit iframe-Embed angelegt (Ziel-URL gesetzt)")
+        return {"status": "created", "modtype": "page", "via": "iframe"}
+
+    # ── Text-Pfad: normaler Seiteninhalt als Paragraph-Blöcke ─────────────────
+    page_text = _extract_page_text_from_soup(soup)
+
+    if not page_text:
+        log.error("    Page enthält keinen nutzbaren Text")
+        _mark_activity_error(conn, row["cmid"])
+        return {"status": "error", "modtype": "page"}
+
+    blocks = _build_paragraph_blocks(page_text)
+    if not blocks:
+        log.error("    Page erzeugt keine Notion-Blöcke")
+        _mark_activity_error(conn, row["cmid"])
+        return {"status": "error", "modtype": "page"}
 
     try:
         notion_id = notion_create_lw_page(resource, None, course_notion_page_id)
