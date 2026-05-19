@@ -91,6 +91,8 @@ PUSHABLE_MODTYPES = {"resource", "folder", "url", "page"}
 MAX_NOTION_SINGLE_PART_BYTES = 20 * 1024 * 1024
 MAX_NOTION_BLOCKS_PER_REQUEST = 100
 MAX_NOTION_RICH_TEXT_CHARS = 2000
+DOWNLOAD_MAX_RETRIES = 3
+DOWNLOAD_RETRY_BACKOFF_SECONDS = (2, 4, 8)
 RESOURCE_STATUS_DEFERRED = "deferred"
 DEFERRED_FAILURE_REASON = "not_yet_available"
 MISSING_VIEW_URL_FAILURE_REASON = "missing_view_url"
@@ -1672,6 +1674,10 @@ def _read_download_response(resp: requests.Response) -> tuple[bytes, str] | None
         return None
 
     file_bytes = b"".join(resp.iter_content(chunk_size=256 * 1024))
+    if content_length and len(file_bytes) < content_length:
+        raise requests.ConnectionError(
+            f"Unvollständiger Download: {len(file_bytes)}/{content_length} Bytes – {filename}"
+        )
     if len(file_bytes) > MAX_NOTION_SINGLE_PART_BYTES:
         log.warning(
             f"Datei zu groß nach Download ({len(file_bytes) / 1024 / 1024:.1f} MB) – überspringe: {filename}"
@@ -1681,16 +1687,49 @@ def _read_download_response(resp: requests.Response) -> tuple[bytes, str] | None
     return file_bytes, filename
 
 
+def _retry_download_operation(operation, *, request_url: str):
+    """Führt eine Download-Operation mit begrenzten Retries für transiente Fehler aus."""
+    retryable_exceptions = (
+        requests.Timeout,
+        requests.exceptions.ChunkedEncodingError,
+        requests.ConnectionError,
+    )
+
+    for attempt in range(DOWNLOAD_MAX_RETRIES):
+        try:
+            return operation()
+        except retryable_exceptions as exc:
+            if attempt >= DOWNLOAD_MAX_RETRIES - 1:
+                raise
+            wait_seconds = DOWNLOAD_RETRY_BACKOFF_SECONDS[attempt]
+            log.warning(
+                "Retrybarer Download-Fehler für %s (%s: %s) – Versuch %s/%s, warte %ss",
+                request_url,
+                type(exc).__name__,
+                exc,
+                attempt + 1,
+                DOWNLOAD_MAX_RETRIES,
+                wait_seconds,
+            )
+            time.sleep(wait_seconds)
+
+
 def _download_file_url(
     session: requests.Session, file_url: str
 ) -> tuple[bytes, str] | None:
     """Lädt eine direkte Datei-URL herunter."""
-    resp = session.get(file_url, allow_redirects=True, stream=True, timeout=60)
-    resp.raise_for_status()
-    if _response_is_html(resp):
-        log.warning(f"Direkte Datei-URL liefert HTML statt Datei: {file_url}")
-        return None
-    return _read_download_response(resp)
+    def _download_once() -> tuple[bytes, str] | None:
+        resp = session.get(file_url, allow_redirects=True, stream=True, timeout=60)
+        try:
+            resp.raise_for_status()
+            if _response_is_html(resp):
+                log.warning(f"Direkte Datei-URL liefert HTML statt Datei: {file_url}")
+                return None
+            return _read_download_response(resp)
+        finally:
+            resp.close()
+
+    return _retry_download_operation(_download_once, request_url=file_url)
 
 
 def _download_resource(
@@ -1713,56 +1752,61 @@ def _download_resource(
         )
     visited_urls.add(normalized_view_url)
 
-    try:
+    def _download_once() -> ResourceDownloadResult:
         resp = session.get(normalized_view_url, allow_redirects=True, stream=True, timeout=60)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
+        try:
+            resp.raise_for_status()
+            final_url = resp.url or normalized_view_url
+            if "/course/view.php" in urlparse(final_url).path:
+                return _resource_error_result(
+                    "terminal_error",
+                    failure_reason="redirected_to_course",
+                    final_url=final_url,
+                )
+
+            if not _response_is_html(resp):
+                result = _read_download_response(resp)
+                if result is None:
+                    return _resource_error_result(
+                        "retryable_error",
+                        failure_reason="download_unavailable",
+                        final_url=final_url,
+                    )
+                file_bytes, file_name = result
+                return _resource_file_result(file_bytes, file_name, final_url=final_url)
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            title = _extract_html_title(soup)
+            if _is_invalid_module_page(soup):
+                return _resource_error_result(
+                    "terminal_error",
+                    failure_reason="invalid_module",
+                    final_url=final_url,
+                    title=title,
+                )
+
+            file_url = _extract_first_download_link(soup)
+            if file_url is None:
+                return _resource_error_result(
+                    "retryable_error",
+                    failure_reason="html_no_download_link",
+                    final_url=final_url,
+                    title=title,
+                )
+
+            return _download_resource(session, file_url, _visited_urls=visited_urls)
+        finally:
+            resp.close()
+
+    try:
+        return _retry_download_operation(_download_once, request_url=normalized_view_url)
+    except (requests.Timeout, requests.exceptions.ChunkedEncodingError, requests.ConnectionError) as exc:
         return _resource_error_result(
             "retryable_error",
             failure_reason="download_exception",
             final_url=normalized_view_url,
             exception=exc,
         )
-
-    final_url = resp.url or normalized_view_url
-    if "/course/view.php" in urlparse(final_url).path:
-        return _resource_error_result(
-            "terminal_error",
-            failure_reason="redirected_to_course",
-            final_url=final_url,
-        )
-
-    if not _response_is_html(resp):
-        result = _read_download_response(resp)
-        if result is None:
-            return _resource_error_result(
-                "retryable_error",
-                failure_reason="download_unavailable",
-                final_url=final_url,
-            )
-        file_bytes, file_name = result
-        return _resource_file_result(file_bytes, file_name, final_url=final_url)
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    title = _extract_html_title(soup)
-    if _is_invalid_module_page(soup):
-        return _resource_error_result(
-            "terminal_error",
-            failure_reason="invalid_module",
-            final_url=final_url,
-            title=title,
-        )
-
-    file_url = _extract_first_download_link(soup)
-    if file_url is None:
-        return _resource_error_result(
-            "retryable_error",
-            failure_reason="html_no_download_link",
-            final_url=final_url,
-            title=title,
-        )
-
-    return _download_resource(session, file_url, _visited_urls=visited_urls)
 
 
 def notion_upload_file(file_bytes: bytes, filename: str) -> str | None:
