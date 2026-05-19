@@ -368,11 +368,188 @@ class LearnwebSyncTests(unittest.TestCase):
         session = mock.Mock()
         session.get.side_effect = requests.Timeout("boom")
 
-        result = lws._download_resource(session, "https://example.com/mod/resource/view.php?id=cm-1")
+        with mock.patch.object(lws.time, "sleep") as sleep_mock:
+            result = lws._download_resource(
+                session,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+            )
 
         self.assertEqual(result.kind, "retryable_error")
         self.assertEqual(result.failure_reason, "download_exception")
         self.assertIn("exception=Timeout: boom", result.failure_detail)
+        self.assertEqual(session.get.call_count, 3)
+        self.assertEqual(sleep_mock.call_args_list, [mock.call(2), mock.call(4)])
+
+    def test_download_resource_retries_timeout_before_success(self):
+        session = mock.Mock()
+        session.get.side_effect = [
+            requests.Timeout("temporary timeout"),
+            FakeHttpResponse(
+                url="https://example.com/pluginfile.php/42/file.pdf",
+                headers={
+                    "Content-Type": "application/pdf",
+                    "Content-Disposition": 'attachment; filename="file.pdf"',
+                },
+                content=b"pdf-bytes",
+            ),
+        ]
+
+        with mock.patch.object(lws.time, "sleep") as sleep_mock:
+            result = lws._download_resource(
+                session,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+            )
+
+        self.assertEqual(result.kind, "file")
+        self.assertEqual(result.file_name, "file.pdf")
+        self.assertEqual(session.get.call_count, 2)
+        sleep_mock.assert_called_once_with(2)
+
+    def test_download_resource_retries_chunked_encoding_error_before_success(self):
+        retry_response = FakeHttpResponse(
+            url="https://example.com/pluginfile.php/42/file.pdf",
+            headers={
+                "Content-Type": "application/pdf",
+                "Content-Disposition": 'attachment; filename="file.pdf"',
+            },
+            content=b"broken-pdf",
+        )
+        retry_response.iter_content = mock.Mock(
+            side_effect=requests.exceptions.ChunkedEncodingError("broken chunk")
+        )
+
+        success_response = FakeHttpResponse(
+            url="https://example.com/pluginfile.php/42/file.pdf",
+            headers={
+                "Content-Type": "application/pdf",
+                "Content-Disposition": 'attachment; filename="file.pdf"',
+            },
+            content=b"pdf-bytes",
+        )
+
+        session = mock.Mock()
+        session.get.side_effect = [retry_response, success_response]
+
+        with mock.patch.object(lws.time, "sleep") as sleep_mock:
+            result = lws._download_resource(
+                session,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+            )
+
+        self.assertEqual(result.kind, "file")
+        self.assertEqual(result.file_bytes, b"pdf-bytes")
+        self.assertEqual(session.get.call_count, 2)
+        sleep_mock.assert_called_once_with(2)
+
+    def test_download_resource_retries_connection_error_before_success(self):
+        session = mock.Mock()
+        session.get.side_effect = [
+            requests.ConnectionError("connection reset"),
+            FakeHttpResponse(
+                url="https://example.com/pluginfile.php/42/file.pdf",
+                headers={
+                    "Content-Type": "application/pdf",
+                    "Content-Disposition": 'attachment; filename="file.pdf"',
+                },
+                content=b"pdf-bytes",
+            ),
+        ]
+
+        with mock.patch.object(lws.time, "sleep") as sleep_mock:
+            result = lws._download_resource(
+                session,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+            )
+
+        self.assertEqual(result.kind, "file")
+        self.assertEqual(result.file_name, "file.pdf")
+        self.assertEqual(session.get.call_count, 2)
+        sleep_mock.assert_called_once_with(2)
+
+    def test_download_resource_returns_retryable_after_third_transient_failure(self):
+        retry_response = FakeHttpResponse(
+            url="https://example.com/pluginfile.php/42/file.pdf",
+            headers={
+                "Content-Type": "application/pdf",
+                "Content-Disposition": 'attachment; filename="file.pdf"',
+            },
+            content=b"broken-pdf",
+        )
+        retry_response.iter_content = mock.Mock(
+            side_effect=requests.exceptions.ChunkedEncodingError("broken chunk")
+        )
+
+        session = mock.Mock()
+        session.get.side_effect = [retry_response, retry_response, retry_response]
+
+        with mock.patch.object(lws.time, "sleep") as sleep_mock:
+            result = lws._download_resource(
+                session,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+            )
+
+        self.assertEqual(result.kind, "retryable_error")
+        self.assertEqual(result.failure_reason, "download_exception")
+        self.assertIn("exception=ChunkedEncodingError: broken chunk", result.failure_detail)
+        self.assertEqual(session.get.call_count, 3)
+        self.assertEqual(sleep_mock.call_args_list, [mock.call(2), mock.call(4)])
+
+    def test_download_resource_retries_truncated_download_before_success(self):
+        truncated_response = FakeHttpResponse(
+            url="https://example.com/pluginfile.php/42/file.pdf",
+            headers={
+                "Content-Type": "application/pdf",
+                "Content-Disposition": 'attachment; filename="file.pdf"',
+                "Content-Length": "100",
+            },
+            content=b"short",
+        )
+        success_response = FakeHttpResponse(
+            url="https://example.com/pluginfile.php/42/file.pdf",
+            headers={
+                "Content-Type": "application/pdf",
+                "Content-Disposition": 'attachment; filename="file.pdf"',
+                "Content-Length": "9",
+            },
+            content=b"pdf-bytes",
+        )
+        session = mock.Mock()
+        session.get.side_effect = [truncated_response, success_response]
+
+        with mock.patch.object(lws.time, "sleep") as sleep_mock:
+            result = lws._download_resource(
+                session,
+                "https://example.com/mod/resource/view.php?id=cm-1",
+            )
+
+        self.assertEqual(result.kind, "file")
+        self.assertEqual(result.file_bytes, b"pdf-bytes")
+        self.assertEqual(session.get.call_count, 2)
+        sleep_mock.assert_called_once_with(2)
+
+    def test_download_file_url_retries_connection_error_before_success(self):
+        session = mock.Mock()
+        session.get.side_effect = [
+            requests.ConnectionError("connection reset"),
+            FakeHttpResponse(
+                url="https://example.com/pluginfile.php/42/file.pdf",
+                headers={
+                    "Content-Type": "application/pdf",
+                    "Content-Disposition": 'attachment; filename="folder-file.pdf"',
+                },
+                content=b"pdf-bytes",
+            ),
+        ]
+
+        with mock.patch.object(lws.time, "sleep") as sleep_mock:
+            result = lws._download_file_url(
+                session,
+                "https://example.com/pluginfile.php/42/file.pdf",
+            )
+
+        self.assertEqual(result, (b"pdf-bytes", "folder-file.pdf"))
+        self.assertEqual(session.get.call_count, 2)
+        sleep_mock.assert_called_once_with(2)
 
     def test_extract_activities_marks_restricted_resource_as_deferred(self):
         soup = make_course_page_with_activity(
