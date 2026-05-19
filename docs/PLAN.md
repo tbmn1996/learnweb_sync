@@ -4,6 +4,13 @@
 > `learnweb_organizer_integration.md`) und ist die einzige Wahrheitsquelle für Architektur
 > und Entwicklungsplan des Projekts. Es wird als `docs/PLAN.md` im Repo geführt.
 
+> **Migration 2026-05-19 abgeschlossen:** Die früheren `(TESTING)`-DBs sind jetzt
+> Produktion (`KurseLearnWeb`, `Learnweb Inhalte`); die ursprünglichen Produktions-DBs
+> wurden zu `KurseLearnWeb (OLD)` / `Learnweb Inhalte (OLD)` umbenannt und logisch
+> archiviert (Backlinks intakt für historische Daten). Property-Namen und DB-Titel
+> tragen kein Suffix mehr — Code-Anpassung erfolgte in Commit `0da6739`. Vollständige
+> Migrationshistorie: `~/.claude/plans/use-this-plan-enchanted-cascade.md`.
+
 ---
 
 ## Kontext & Problem
@@ -199,7 +206,7 @@ CREATE TABLE IF NOT EXISTS resources (
 | `Ziel-URL` | url | extrahierte externe Zieladresse, nur für `modtype=url` |
 | `Nr` | text | cmid |
 | `Variante` | select | Original / Solution / Template / … |
-| `KurseLearnWeb (TESTING)` | relation | Notion Page-ID aus KurseLearnWeb |
+| `KurseLearnWeb` | relation | Notion Page-ID aus KurseLearnWeb |
 
 Bereits synchronisierte `url`-Seiten behalten ihren historischen Bookmark-Block im Inhalt.
 Neue `url`-Seiten zeigen die Zieladresse ausschließlich in `Ziel-URL`; diese gemischte UI-Darstellung
@@ -261,7 +268,7 @@ learnweb_sync/
 
 **Deliverables:** `push`-Kommando, `run`-Kommando, Fehlerbehandlung, Deduplizierung.
 
-**Testergebnis (TESTING DB, WS 25/26):** 91 Ressourcen, 0 Fehler, Kurs 100 %, R Resource 35 %.
+**Testergebnis (NEW DB, jetzt Produktion, WS 25/26):** 91 Ressourcen, 0 Fehler, Kurs 100 %, R Resource 35 %.
 
 ### Phase 3 — Railway-Deployment ✅ ABGESCHLOSSEN
 
@@ -278,10 +285,12 @@ learnweb_sync/
 - Env-Variablen setzen (siehe README)
 - Zwei neue GitHub Secrets: `LEARNWEB_SYNC_WEBHOOK_URL`, `SYNC_WEBHOOK_SECRET`
 
-**Produktions-Switchover (falls noch auf TESTING-DBs):**
-- `NOTION_LW_DB_ID` → `321bf244cadc804b9d3dd94cb2daaad7` (Learnweb Inhalte Produktion)
-- `NOTION_COURSES_DB_ID` → KurseLearnWeb Produktion
-- `COURSE_MAP` um alle aktiven Kurse erweitern
+**~~Produktions-Switchover~~ (durchgeführt 2026-05-19):**
+- Aktuelle DB-IDs liegen in `.env`. Die DBs heißen jetzt `KurseLearnWeb` und
+  `Learnweb Inhalte` (ehemals mit `(TESTING)`-Suffix); die früheren Produktions-DBs
+  sind jetzt `KurseLearnWeb (OLD)` / `Learnweb Inhalte (OLD)` und nur noch für
+  historische Backlinks aktiv.
+- `COURSE_MAP` muss bei jedem Semesterwechsel um neue aktive Kurse erweitert werden.
 
 ### Phase 4 — Notion-Button Trigger (optional, zurückgestellt)
 
