@@ -6,11 +6,17 @@ Whisper-Segment-Normalisierung und den Opencast-Parser (beide Formate).
 
 Stil bewusst wie tests/test_learnweb_sync.py (unittest.TestCase).
 """
+import http.cookiejar
 import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import learnweb_sync as lws
-from transcription import manifest, notion_blocks, recordings, transcriber
+import requests
+from transcription import downloader, manifest, notion_blocks, recordings, transcriber
 from transcription.types import Recording, Segment
 
 
@@ -33,6 +39,77 @@ def _rec(cmid="100", episode_id="ep-aaa", media_url="https://cdn/x.mp4", **kw) -
         episode_id=episode_id,
         media_url=media_url,
     )
+
+
+class TestDownloader(unittest.TestCase):
+    """Cookie-Export und secret-sichere yt-dlp-Fehler."""
+
+    def test_netscape_cookie_flags_are_loadable_and_preserved(self):
+        session = requests.Session()
+        session.cookies.set(
+            "host-cookie", "host-value", domain="example.com", path="/", secure=False
+        )
+        session.cookies.set(
+            "domain-cookie", "domain-value", domain=".example.org", path="/secure", secure=True
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cookie_path = Path(temp_dir) / "cookies.txt"
+            downloader._session_cookies_to_netscape(session, cookie_path)
+
+            self.assertTrue(cookie_path.read_text(encoding="utf-8").endswith("\n"))
+            jar = http.cookiejar.MozillaCookieJar(str(cookie_path))
+            jar.load(ignore_discard=True, ignore_expires=True)
+
+        cookies = {cookie.name: cookie for cookie in jar}
+        self.assertEqual(cookies["host-cookie"].domain, "example.com")
+        self.assertFalse(cookies["host-cookie"].domain_initial_dot)
+        self.assertFalse(cookies["host-cookie"].secure)
+        self.assertEqual(cookies["domain-cookie"].domain, ".example.org")
+        self.assertTrue(cookies["domain-cookie"].domain_initial_dot)
+        self.assertTrue(cookies["domain-cookie"].secure)
+
+    def test_download_error_redacts_cookie_record_values_and_urls(self):
+        cookie_value = "session-secret-value"
+        media_url = "https://cdn.example/video.mp4?token=query-secret"
+        session = requests.Session()
+        session.cookies.set(
+            "MoodleSession", cookie_value, domain="example.com", path="/", secure=True
+        )
+        stderr = (
+            ("noise before final error\n" * 200)
+            + "yt_dlp.cookies.CookieLoadError: failed to load cookies\n"
+            + "ERROR: invalid cookies from "
+            + media_url
+            + ": 'example.com\tFALSE\t/\tTRUE\t0\tMoodleSession\t"
+            + cookie_value
+            + "'\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch(
+                "transcription.downloader.subprocess.run",
+                return_value=SimpleNamespace(returncode=1, stdout="", stderr=stderr),
+            ) as run_mock:
+                with self.assertRaises(RuntimeError) as caught:
+                    downloader.download_media(
+                        session,
+                        _rec(media_url=media_url),
+                        Path(temp_dir),
+                    )
+
+            cmd = run_mock.call_args.args[0]
+            cookie_path = Path(cmd[cmd.index("--cookies") + 1])
+            self.assertFalse(cookie_path.exists())
+            self.assertEqual(cmd[cmd.index("-f") + 1], "best")
+
+        message = str(caught.exception)
+        self.assertIn("failed to load cookies", message)
+        self.assertIn("<redacted-url>", message)
+        self.assertNotIn(cookie_value, message)
+        self.assertNotIn(media_url, message)
+        self.assertNotIn("query-secret", message)
+        self.assertNotIn("example.com\tFALSE", message)
 
 
 class TestRecordingKey(unittest.TestCase):

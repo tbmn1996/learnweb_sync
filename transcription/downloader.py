@@ -7,6 +7,7 @@ zu Disk (umgeht RAM-Cap). Audio wird mit ffmpeg zu 16 kHz mono WAV extrahiert
 """
 
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -28,23 +29,59 @@ FFPROBE_TIMEOUT_S = 60        # 1 Minute für Duration-Abfrage
 # User-Agent (muss der Session entsprechen).
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 
+# Fehlerausgaben werden geloggt und in state.db persistiert. Deshalb erst
+# redigieren und danach begrenzen, damit weder Cookies noch Medien-URLs landen.
+YT_DLP_ERROR_MAX_CHARS = 2000
+YT_DLP_ERROR_MAX_LINES = 20
+_URL_RE = re.compile(r"https?://[^\s'\"]+")
+_NETSCAPE_COOKIE_RECORD_RE = re.compile(
+    r"[^\s'\"]+\t(?:TRUE|FALSE)\t[^\t\r\n]*\t(?:TRUE|FALSE|0|1)"
+    r"\t\d+\t[^\t\r\n]+\t[^\t\r\n'\"]+"
+)
+
 
 def _session_cookies_to_netscape(session, path: Path) -> None:
     """Exportiert requests.Session-Cookies im Netscape-Cookie-Jar-Format.
 
-    Der generierte Cookie-Jar kompatibel mit yt-dlp und curl. Jede Zeile:
-    domain, flag, path, secure (0|1), expiry, name, value
+    Der generierte Cookie-Jar ist kompatibel mit yt-dlp und curl. Jede Zeile:
+    domain, include-subdomains, path, secure, expiry, name, value
     """
     lines = ["# Netscape HTTP Cookie File", ""]
     for cookie in session.cookies:
         # Standard-Netscape-Format: domain, flag, path, secure, expiry, name, value
         domain = cookie.domain or "example.com"
+        include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
         path_field = cookie.path or "/"
-        secure = "1" if cookie.secure else "0"
+        secure = "TRUE" if cookie.secure else "FALSE"
         expiry = str(int(cookie.expires)) if cookie.expires else "0"
-        lines.append(f"{domain}\tTRUE\t{path_field}\t{secure}\t{expiry}\t{cookie.name}\t{cookie.value}")
+        lines.append(
+            f"{domain}\t{include_subdomains}\t{path_field}\t{secure}\t"
+            f"{expiry}\t{cookie.name}\t{cookie.value}"
+        )
 
-    path.write_text("\n".join(lines))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _sanitize_yt_dlp_error(stderr: str, cookie_values) -> str:
+    """Redigiert Secrets/URLs und liefert einen begrenzten Fehlerauszug."""
+    sanitized = stderr or ""
+
+    # Exakte Werte zuerst entfernen. Das fängt auch Ausgaben ab, die nicht mehr
+    # als vollständige Netscape-Zeile vorliegen.
+    for value in cookie_values:
+        if value:
+            sanitized = sanitized.replace(str(value), "<redacted-cookie>")
+
+    sanitized = _NETSCAPE_COOKIE_RECORD_RE.sub(
+        "<redacted-cookie-record>", sanitized
+    )
+    sanitized = _URL_RE.sub("<redacted-url>", sanitized)
+
+    lines = [line.rstrip() for line in sanitized.splitlines() if line.strip()]
+    tail = "\n".join(lines[-YT_DLP_ERROR_MAX_LINES:])
+    if len(tail) > YT_DLP_ERROR_MAX_CHARS:
+        tail = tail[-YT_DLP_ERROR_MAX_CHARS:]
+    return tail or "stderr leer"
 
 
 def download_media(session, recording: Recording, dest_dir: Path) -> Path:
@@ -105,7 +142,10 @@ def download_media(session, recording: Recording, dest_dir: Path) -> Path:
             raise RuntimeError(f"yt-dlp timeout nach {YT_DLP_TIMEOUT_S}s für {recording.title}")
 
         if result.returncode != 0:
-            stderr_snippet = result.stderr[:500]  # Erste 500 Zeichen des Fehlers.
+            stderr_snippet = _sanitize_yt_dlp_error(
+                result.stderr,
+                (cookie.value for cookie in session.cookies),
+            )
             raise RuntimeError(f"yt-dlp Fehler: {stderr_snippet}")
 
         # Finde die heruntergeladene Datei (größte Datei mit dem Präfix, ohne .part).
