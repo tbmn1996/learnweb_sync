@@ -17,6 +17,7 @@ python learnweb_sync.py <command>
 - `run` — scan + push (Phase 2, experimentell)
 - `diagnose-resource-errors` — Offene Resource-Fehler klassifizieren
 - `export-zips` — Alle Kurse als ZIP-Backup herunterladen
+- `transcribe` — **Lokaler Mac-Worker:** Opencast-Vorlesungsaufzeichnungen finden, on-device transkribieren, Transkript als Notion-Seite ablegen (siehe Abschnitt „Transkriptions-Worker"). Argumente: `--cmid N`, `--course X`, `--limit N`, `--force` (nur mit `--cmid`/`--course`), `--dry-run`.
 
 **Launchd-Service:** `de.thomasn.learnweb-sync` (angenommen aus Memory; im Code nicht explizit referenziert)
 
@@ -51,3 +52,32 @@ python learnweb_sync.py <command>
 - **Manifest-Struktur:** Ist abhängig von LearnWeb-HTML-Struktur; Änderungen bei Moodle-Updates führen zu Parse-Fehlern. **Logs prüfen** vor `push`.
 - **Notion Push-Batches:** Intern begrenzt auf ~100 Pages/Update pro Aufruf; bei großen Kursen kann `push` mehrere Minuten dauern.
 - **SSO-Timeouts:** LearnWeb-Session läuft nach ~2h ab; bei langen `scan`-Läufen ggf. neu-Login nötig (Code prüft nicht automatisch).
+
+## Transkriptions-Worker (`transcribe`, nur lokal auf dem Mac)
+
+Findet Opencast-Vorlesungsaufzeichnungen in sync-markierten Kursen, transkribiert sie **on-device** (kostenlos) mit Whisper und legt das Transkript als eigene **Meeting-Notiz-Seite** in Notion ab, verlinkt mit dem Learnweb-Inhalt und dem Kurs.
+
+**Warum lokal-only:** On-Device-Whisper (MLX/Apple Silicon) läuft nicht auf Railway (CPU-Linux). Der Railway-Dienst macht weiterhin nur `run`/`scan`/`push` (Dateien). `opencast` ist bewusst **nicht** in `PUSHABLE_MODTYPES`, sondern in der separaten Konstante `TRANSCRIBABLE_MODTYPES` — der Railway-Pfad bleibt unverändert.
+
+**Ablauf (Zustandsautomat, je Aufzeichnung sofort persistiert):**
+`login` → sync-markierte Kurse → opencast-Aktivitäten → Episoden-Discovery → atomares Claiming (SQLite + `flock`) → yt-dlp-Download → ffmpeg (16 kHz mono) → Whisper → create-or-find Inhalts-Eintrag + Meeting-Seite → Body in Batches (≤100 Blöcke, ≤1900 Zeichen) anhängen (resume-fähig) → `done`. Dedupe-Key: `{cmid}-{sha1(episode_id|media_url)[:12]}`, Tabelle `transcripts` in `state.db`.
+
+**Paket `transcription/`:** `recordings.py` (Opencast-Discovery, neues `window.episode`-JSON + altes Listenformat), `downloader.py` (yt-dlp/ffmpeg/ffprobe), `transcriber.py` (mlx-whisper primär, faster-whisper Fallback, Capability-Detection), `notion_blocks.py` (Segment→Absatz, Timestamps, Chunking), `manifest.py` (Key + Zustandsautomat), `types.py` (`Recording`, `Segment`).
+
+**Installation (lokal, freigabepflichtig):**
+```bash
+source .venv/bin/activate
+pip install -r requirements-transcription.txt   # mlx-whisper, faster-whisper, yt-dlp
+brew install ffmpeg                              # ffmpeg + ffprobe (System-Binaries)
+```
+
+**Zusätzliche .env-Variablen:** `NOTION_MEETING_DB_ID` (Meeting-Notizen-DB `30bbf244…`, **Pflicht** außer bei `--dry-run`), optional `WHISPER_MODEL` (Default `large-v3-turbo`), `WHISPER_LANGUAGE` (`de`), `TRANSCRIBE_MAX_ATTEMPTS`, `TRANSCRIBE_LOCK_PATH`, `TRANSCRIBE_WORK_DIR`, `YT_DLP_BIN`/`FFMPEG_BIN`/`FFPROBE_BIN`.
+
+**Performance (gemessen 06/2026, Apple Silicon, `large-v3-turbo`):** ~Faktor 8 schneller als Echtzeit (120 s Audio → 15 s Transkription) → eine 90-Min-Vorlesung ≈ 11 min Transkription + Video-Download. Modell-Erstdownload einmalig ~1,5 GB (danach gecacht). Kosten = nur Strom/Zeit.
+
+**Automatisierung:** Vorlage `launchd/de.thomasn.learnweb-transcribe.plist` (RunAtLoad + täglich 13:00/20:00). Aktivierung (`launchctl load`) **erst nach expliziter Freigabe** (CLAUDE.md/Workspace §5).
+
+**Bekannte Einschränkungen (Stand 06/2026):**
+- **Aufzeichnungsdatum:** LearnWeb-Opencast liefert pro Episode kein verlässliches Datum (kein `created`/`start` im `window.episode`-JSON; Titel enthalten nur eine laufende Nummer). `recorded_at` bleibt daher bewusst leer, statt zu raten → in Notion bleibt `Datum` leer.
+- **Single-Episode-Format:** Manche Aktivitäten (z. B. einzelne BWL-VLs) liefern nur die Medien-URL ohne Metadaten → generischer Titel „Aufzeichnung &lt;cmid&gt;", keine `episode_id`. Transkription funktioniert trotzdem.
+- **Alte/abgemeldete Kurse:** Bei nicht mehr zugänglichen Kursen findet die Discovery 0 Aufzeichnungen.
