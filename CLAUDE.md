@@ -31,15 +31,15 @@ python learnweb_sync.py <command>
 
 ## Notion-DBs
 - `a44bf244-cadc-8266-9c11-816719a8ec06` — **KurseLearnWeb** (Produktiv, sync-courses)
-- `322bf244-cadc-806c-babb-f39757c3e27f` — **Learnweb Inhalte** (Testing, push-Phase)
-  - Produktion nach Freigabe: `321bf244-cadc-804b-9d3d-d94cb2daaad7`
+- `322bf244-cadc-806c-babb-f39757c3e27f` — **Learnweb Inhalte** (Produktiv)
+- `321bf244-cadc-804b-9d3d-d94cb2daaad7` — **Learnweb Inhalte (OLD)** (archiviert; historische Backlinks)
 - `320bf244-cadc-80e3-b714-ece5096f83d7` — **MODULHANDBUCH** (Referenzbasis)
 
 ## .env-Variablen
 - `LEARNWEB_URL`, `LEARNWEB_USERNAME`, `LEARNWEB_PASSWORD` — SSO-Creds
 - `NOTION_TOKEN` — Notion API-Key
 - `NOTION_COURSES_DB_ID` — KurseLearnWeb (oben)
-- `NOTION_LW_DB_ID` — Learnweb Inhalte (oben; produktiv vs. testing wechselbar)
+- `NOTION_LW_DB_ID` — Learnweb Inhalte (oben; produktive Learnweb-Inhalte-DB)
 - `COURSE_MAP` — JSON-String für Shortname-Mapping
 - `CURRENT_SEMESTER_OVERRIDE` — Nur für Backfills (z. B. `WS 25/26`)
 - `SEMESTER_TIMEZONE` — Tz-Override (Default: `Europe/Berlin`)
