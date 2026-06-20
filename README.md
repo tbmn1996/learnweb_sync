@@ -40,6 +40,11 @@ CLI-Befehle für lokale Läufe:
 | `python learnweb_sync.py run` | `sync-courses` + `scan` + `push` in einem Schritt |
 | `python learnweb_sync.py diagnose-resource-errors --limit 50` | Offene `resource`-Fälle read-only klassifizieren und nach Fehlergrund gruppieren |
 | `python learnweb_sync.py export-zips` | Alle Kurse als ZIP-Backup herunterladen |
+| `python learnweb_sync.py transcribe --url <LearnWeb-URL>` | YouTube-Videos aus einer LearnWeb-Abschnittsseite transkribieren: Untertitel zuerst, sonst lokales Whisper |
+
+`transcribe --url` ist gegenseitig exklusiv mit `--cmid` und `--course`. YouTube-Aufrufe
+laufen ohne LearnWeb-Cookies. Mit `--dry-run` werden weder Notion noch `state.db`
+verändert; der Manifest-Zustand liegt für diesen Lauf ausschließlich im Arbeitsspeicher.
 
 Lokal läuft der Sync direkt als CLI — kein `server.py` nötig.
 

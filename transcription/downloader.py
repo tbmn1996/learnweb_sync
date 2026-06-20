@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from .types import Recording
+from .types import Recording, Segment
 
 
 # Konstanten für Kommandos (über env oder Defaults).
@@ -23,6 +23,7 @@ FFPROBE = os.getenv("FFPROBE_BIN", "ffprobe")
 
 # Timeouts (großzügig für Netzwerk).
 YT_DLP_TIMEOUT_S = 2 * 3600  # 2 Stunden für große Aufzeichnungen
+YT_DLP_SUBS_TIMEOUT_S = 5 * 60  # 5 Minuten für reinen Untertitel-Abruf (kein Video)
 FFMPEG_TIMEOUT_S = 30 * 60   # 30 Minuten für Audio-Extraktion
 FFPROBE_TIMEOUT_S = 60        # 1 Minute für Duration-Abfrage
 
@@ -267,3 +268,237 @@ def probe_duration(media_path: Path) -> Optional[float]:
         return duration if duration > 0 else None
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# YouTube-spezifischer Pfad (Quelltyp "youtube").
+#
+# WICHTIG (Sicherheit): YouTube-Aufrufe laufen BEWUSST OHNE `--cookies`. Die
+# LearnWeb-Session-Cookies dürfen niemals an Google/YouTube gesendet werden.
+# Daher eigene Funktionen statt `download_media` (das hängt Cookies an).
+# ---------------------------------------------------------------------------
+
+
+def fetch_youtube_title(url: str) -> str | None:
+    """Liest einen YouTube-Titel per yt-dlp, ohne Cookies oder Media-Download."""
+    if not url:
+        return None
+
+    cmd = [
+        YT_DLP,
+        "--no-playlist",
+        "--skip-download",
+        "--print", "%(title)s",
+        "--user-agent", USER_AGENT,
+        url,
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=YT_DLP_SUBS_TIMEOUT_S
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        title = " ".join(line.split())
+        if title:
+            return title
+    return None
+
+
+def _subtitle_files_in_preferred_order(
+    dest_dir: Path, *, langs: str
+) -> list[tuple[Path, str]]:
+    """Sortiert Subtitle-Dateien nach Sprachwunsch, danach json3 vor vtt."""
+    candidates: list[tuple[Path, str, str]] = []
+    for fmt in ("json3", "vtt"):
+        suffix = f".{fmt}"
+        for path in sorted(dest_dir.glob(f"subs*.{fmt}")):
+            name = path.name
+            if not name.startswith("subs.") or not name.endswith(suffix):
+                continue
+            language = name[len("subs."):-len(suffix)]
+            candidates.append((path, fmt, language))
+
+    preferences = [lang.strip() for lang in langs.split(",") if lang.strip()]
+    ordered: list[tuple[Path, str]] = []
+    used: set[Path] = set()
+    for preference in preferences:
+        try:
+            matcher = re.compile(preference)
+        except re.error:
+            matcher = re.compile(re.escape(preference))
+        for fmt in ("json3", "vtt"):
+            for path, candidate_fmt, language in candidates:
+                if path in used or candidate_fmt != fmt:
+                    continue
+                if matcher.fullmatch(language):
+                    ordered.append((path, fmt))
+                    used.add(path)
+
+    # yt-dlp sollte nur angeforderte Sprachen schreiben. Der Fallback verhindert
+    # dennoch, dass ein leicht abweichender Sprachname ein brauchbares File verwirft.
+    for fmt in ("json3", "vtt"):
+        for path, candidate_fmt, _language in candidates:
+            if path not in used and candidate_fmt == fmt:
+                ordered.append((path, fmt))
+                used.add(path)
+    return ordered
+
+
+def _youtube_subtitle_pass(
+    recording: Recording, dest_dir: Path, *, langs: str, auto: bool
+) -> list[Segment] | None:
+    """Ein einzelner yt-dlp-Untertitel-Durchlauf (manuell ODER automatisch).
+
+    Lädt NUR Untertitel (kein Video/Audio) cookie-frei in `dest_dir` und gibt die
+    erste erfolgreich geparste, NICHT-leere Segmentliste zurück, sonst None.
+
+    Args:
+        recording: Recording mit `media_url`/`source_url` = YouTube-watch-URL.
+        dest_dir: separater Unterordner NUR für diesen Durchlauf (kein Vermischen
+            zwischen manuellem und automatischem Versuch).
+        langs: yt-dlp `--sub-langs`-Wert (z.B. "de,en").
+        auto: True → automatische Untertitel (`--write-auto-subs`),
+            False → manuelle Untertitel (`--write-subs`).
+    """
+    # Lazy-Import vermeidet harte Kopplung zur Modul-Ladereihenfolge.
+    from .youtube import parse_youtube_subtitles
+
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    url = recording.media_url or recording.source_url
+    if not url:
+        raise RuntimeError("YouTube-Recording hat keine media_url/source_url")
+
+    out_template = str(dest_dir / "subs.%(ext)s")
+    sub_flag = "--write-auto-subs" if auto else "--write-subs"
+    cmd = [
+        YT_DLP,
+        "--no-playlist",
+        "--skip-download",        # KEIN Video/Audio, nur Untertitel.
+        sub_flag,
+        "--sub-langs", langs,
+        "--sub-format", "json3/vtt",  # json3 bevorzugt, vtt als Fallback.
+        "--user-agent", USER_AGENT,
+        "-o", out_template,
+        url,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=YT_DLP_SUBS_TIMEOUT_S
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"yt-dlp Untertitel-Timeout nach {YT_DLP_SUBS_TIMEOUT_S}s für {recording.title}"
+        )
+
+    # Fehlende Untertitel sind KEIN harter Fehler (yt-dlp gibt dann nur eine
+    # Warnung aus). Wir behandeln returncode != 0 hier als "keine Untertitel"
+    # und überlassen einen echten Abbruch dem späteren Audio-Download-Fallback.
+    if result.returncode != 0:
+        return None
+
+    for sub_file, fmt in _subtitle_files_in_preferred_order(dest_dir, langs=langs):
+        raw = sub_file.read_text(encoding="utf-8", errors="replace")
+        segments = parse_youtube_subtitles(raw, fmt)
+        if segments:
+            return segments
+
+    return None
+
+
+def fetch_youtube_subtitles(
+    recording: Recording, dest_dir: Path, *, langs: str
+) -> list[Segment] | None:
+    """Untertitel-zuerst-Kaskade für YouTube (cookie-frei).
+
+    Reihenfolge (siehe Plan, Designentscheidung 9):
+      1. manuelle Untertitel → bei ≥1 gültigem Segment zurückgeben;
+      2. sonst automatische Untertitel → bei ≥1 gültigem Segment zurückgeben;
+      3. sonst None (Aufrufer fällt auf Audio + Whisper zurück).
+
+    Getrennte Unterordner pro Versuch verhindern, dass Dateien des ersten
+    Versuchs mit dem zweiten verwechselt werden. Ein kaputter manueller Track
+    löst also NICHT sofort Whisper aus, solange gültige Auto-Subs existieren.
+    """
+    dest_dir = Path(dest_dir)
+
+    manual = _youtube_subtitle_pass(
+        recording, dest_dir / "subs_manual", langs=langs, auto=False
+    )
+    if manual:
+        return manual
+
+    auto = _youtube_subtitle_pass(
+        recording, dest_dir / "subs_auto", langs=langs, auto=True
+    )
+    if auto:
+        return auto
+
+    return None
+
+
+def download_youtube_audio(recording: Recording, dest_dir: Path) -> Path:
+    """Lädt NUR die Audiospur eines YouTube-Videos (cookie-frei) für Whisper.
+
+    Fallback, wenn keine brauchbaren Untertitel vorhanden sind.
+
+    Returns:
+        Path zur heruntergeladenen Audiodatei (größte Datei mit Präfix).
+
+    Raises:
+        RuntimeError: Bei yt-dlp-Fehler oder wenn keine Datei gefunden wird.
+    """
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    url = recording.media_url or recording.source_url
+    if not url:
+        raise RuntimeError("YouTube-Recording hat keine media_url/source_url")
+
+    # Eindeutiger Basisname pro Video (episode_id = YouTube-video_id).
+    base_name = f"recording_{recording.cmid}_{recording.episode_id or 'yt'}"
+    out_template = str(dest_dir / f"{base_name}.%(ext)s")
+
+    cmd = [
+        YT_DLP,
+        "--no-playlist",
+        "--no-part",
+        "-f", "bestaudio/best",   # Nur Audiospur (spart Bandbreite/Zeit).
+        "--user-agent", USER_AGENT,
+        "-o", out_template,
+        url,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=YT_DLP_TIMEOUT_S
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"yt-dlp timeout nach {YT_DLP_TIMEOUT_S}s für {recording.title}"
+        )
+
+    if result.returncode != 0:
+        # Keine Cookies im Spiel → keine Cookie-Werte zu redigieren.
+        stderr_snippet = _sanitize_yt_dlp_error(result.stderr, [])
+        raise RuntimeError(f"yt-dlp Fehler (YouTube-Audio): {stderr_snippet}")
+
+    candidates = [
+        f for f in dest_dir.iterdir()
+        if f.is_file()
+        and f.name.startswith(f"{base_name}.")
+        and not f.name.endswith(".part")
+    ]
+    if not candidates:
+        raise RuntimeError(
+            f"yt-dlp lieferte keine Audiodatei für {recording.title} in {dest_dir}"
+        )
+
+    return max(candidates, key=lambda f: f.stat().st_size)

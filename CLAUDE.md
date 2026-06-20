@@ -17,7 +17,7 @@ python learnweb_sync.py <command>
 - `run` — scan + push (Phase 2, experimentell)
 - `diagnose-resource-errors` — Offene Resource-Fehler klassifizieren
 - `export-zips` — Alle Kurse als ZIP-Backup herunterladen
-- `transcribe` — **Lokaler Mac-Worker:** Opencast-Vorlesungsaufzeichnungen finden, on-device transkribieren, Transkript als Notion-Seite ablegen (siehe Abschnitt „Transkriptions-Worker"). Argumente: `--cmid N`, `--course X`, `--limit N`, `--force` (nur mit `--cmid`/`--course`), `--dry-run`.
+- `transcribe` — **Lokaler Mac-Worker:** Opencast-Vorlesungsaufzeichnungen finden, on-device transkribieren, Transkript als Notion-Seite ablegen (siehe Abschnitt „Transkriptions-Worker"). Argumente: `--cmid N`, `--course X`, `--url <LearnWeb-URL>`, `--limit N`, `--force` (nur mit `--cmid`/`--course`/`--url`), `--dry-run`.
 
 **Launchd-Service:** `de.thomasn.learnweb-sync` (angenommen aus Memory; im Code nicht explizit referenziert)
 
@@ -55,7 +55,15 @@ python learnweb_sync.py <command>
 
 ## Transkriptions-Worker (`transcribe`, nur lokal auf dem Mac)
 
-Findet Opencast-Vorlesungsaufzeichnungen in sync-markierten Kursen, transkribiert sie **on-device** (kostenlos) mit Whisper und legt das Transkript als eigene **Meeting-Notiz-Seite** in Notion ab, verlinkt mit dem Learnweb-Inhalt und dem Kurs.
+Findet YouTube-Videos und Opencast-Vorlesungsaufzeichnungen, transkribiert sie **on-device** (kostenlos) mit Whisper (oder Untertitel wenn vorhanden) und legt das Transkript als eigene **Meeting-Notiz-Seite** in Notion ab.
+
+**Zwei Transkriptions-Pfade:**
+
+1. **`--url <LearnWeb-Abschnitts-URL>`** — Lädt die Seite, findet verlinkte YouTube-Videos (direkte Links oder `mod/url`-Aktivitäten mit YouTube-Ziel), transkribiert sie. Transkriptquelle: **Untertitel zuerst** (YouTube, bevorzugte Sprachen aus `YT_SUBTITLE_LANGS`), falls nicht vorhanden → on-device Whisper (Audio via yt-dlp, cookie-frei). `--url` ist gegenseitig exklusiv mit `--cmid`/`--course`.
+
+2. **`--cmid N` / `--course X`** — Findet Opencast-Aufzeichnungen in den Kursen, transkribiert sie mit Whisper.
+
+**Sicherheit:** YouTube-Aufrufe laufen ohne LearnWeb-Cookies (Trennung LearnWeb/Google). Der `--url`-Pfad nutzt nur read-only Notion-Lookups → `--dry-run` schreibt garantiert nichts.
 
 **Warum lokal-only:** On-Device-Whisper (MLX/Apple Silicon) läuft nicht auf Railway (CPU-Linux). Der Railway-Dienst macht weiterhin nur `run`/`scan`/`push` (Dateien). `opencast` ist bewusst **nicht** in `PUSHABLE_MODTYPES`, sondern in der separaten Konstante `TRANSCRIBABLE_MODTYPES` — der Railway-Pfad bleibt unverändert.
 
@@ -71,7 +79,7 @@ pip install -r requirements-transcription.txt   # mlx-whisper, faster-whisper, y
 brew install ffmpeg                              # ffmpeg + ffprobe (System-Binaries)
 ```
 
-**Zusätzliche .env-Variablen:** `NOTION_MEETING_DB_ID` (Meeting-Notizen-DB `30bbf244…`, **Pflicht** außer bei `--dry-run`), optional `WHISPER_MODEL` (Default `large-v3-turbo`), `WHISPER_LANGUAGE` (`de`), `TRANSCRIBE_MAX_ATTEMPTS`, `TRANSCRIBE_LOCK_PATH`, `TRANSCRIBE_WORK_DIR`, `YT_DLP_BIN`/`FFMPEG_BIN`/`FFPROBE_BIN`.
+**Zusätzliche .env-Variablen:** `NOTION_MEETING_DB_ID` (Meeting-Notizen-DB `30bbf244…`, **Pflicht** außer bei `--dry-run`), optional `WHISPER_MODEL` (Default `large-v3-turbo`), `WHISPER_LANGUAGE` (`de`), `YT_SUBTITLE_LANGS` (Default: `de,en` abgeleitet aus `WHISPER_LANGUAGE` + en), `TRANSCRIBE_MAX_ATTEMPTS`, `TRANSCRIBE_LOCK_PATH`, `TRANSCRIBE_WORK_DIR`, `YT_DLP_BIN`/`FFMPEG_BIN`/`FFPROBE_BIN`.
 
 **Performance (gemessen 06/2026, Apple Silicon, `large-v3-turbo`):** ~Faktor 8 schneller als Echtzeit (120 s Audio → 15 s Transkription) → eine 90-Min-Vorlesung ≈ 11 min Transkription + Video-Download. Modell-Erstdownload einmalig ~1,5 GB (danach gecacht). Kosten = nur Strom/Zeit.
 

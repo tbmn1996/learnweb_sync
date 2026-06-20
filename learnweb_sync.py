@@ -2985,6 +2985,267 @@ def _notify_transcribe_failures(failures: list[dict]) -> None:
         )
 
 
+def _parse_section_course_id(soup: BeautifulSoup, html: str) -> str | None:
+    """Leitet die Moodle-Kurs-ID aus einer geladenen Abschnitts-/Kursseite ab.
+
+    Mehrere Fallback-Quellen (robust gegen Theme-Änderungen):
+      1. <body class="… course-NNNN"> (zuverlässigste Quelle),
+      2. courseId im Inline-JS (z. B. M.cfg).
+    BEWUSST NICHT der erste `course/view.php?id=`-Link – das Navigationsmenü
+    enthält viele fremde Kurse. Gibt None zurück, wenn nichts Eindeutiges da ist.
+    """
+    body = soup.find("body")
+    if body:
+        for cls in (body.get("class") or []):
+            match = re.fullmatch(r"course-(\d+)", cls)
+            if match:
+                return match.group(1)
+    match = re.search(r'courseId["\']?\s*[:=]\s*["\']?(\d+)', html)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _extract_section_course_name(soup: BeautifulSoup) -> str | None:
+    """Liest einen Kursnamen aus dem <title> einer Abschnittsseite (rein informativ).
+
+    Moodle-Titel haben die Form "Section: … | <Kursname> | Learnweb". Wird in
+    Notion NICHT als Property geschrieben (nur Logging/Recording-Metadaten).
+    """
+    if soup.title and soup.title.string:
+        parts = [p.strip() for p in soup.title.string.split("|")]
+        if len(parts) >= 3 and parts[1]:
+            return parts[1]
+    return None
+
+
+def _youtube_subtitle_langs() -> str:
+    """Bestimmt den yt-dlp `--sub-langs`-Wert (Plan, Designentscheidung 8).
+
+    Expliziter Env-Wert `YT_SUBTITLE_LANGS`, sonst deduplizierte Folge
+    [WHISPER_LANGUAGE, "en"] → normaler Default "de,en".
+    """
+    explicit = os.getenv("YT_SUBTITLE_LANGS", "").strip()
+    if explicit:
+        return explicit
+    seen: list[str] = []
+    for lang in (WHISPER_LANGUAGE, "en"):
+        lang = (lang or "").strip()
+        if lang and lang not in seen:
+            seen.append(lang)
+    return ",".join(seen) if seen else "en"
+
+
+def _youtube_title_needs_probe(title: str | None) -> bool:
+    """Erkennt fehlende oder generische HTML-Titel ohne Informationswert."""
+    if not title:
+        return True
+    normalized = " ".join(title.lower().split())
+    return normalized in {
+        "video",
+        "youtube",
+        "youtube video",
+        "youtube video player",
+        "yt link",
+    }
+
+
+def discover_youtube_recordings(
+    session: requests.Session,
+    soup: BeautifulSoup,
+    html: str,
+    *,
+    course_id: str,
+    course_shortname: str | None = None,
+    course_name: str | None = None,
+) -> list:
+    """Findet YouTube-Videos auf einer LearnWeb-Abschnitts-/Seiten-HTML.
+
+    Zwei Quellen, vereint und per video_id dedupliziert:
+      1. Direkte YouTube-Links (<a>/<iframe>) im Seiten-HTML.
+      2. `mod/url`-Aktivitäten, deren Ziel (via `_extract_url_target`) ein
+         YouTube-Link ist. Der Aktivitätsname dient als (besserer) Titel.
+    Gesperrte/linklose Aktivitäten (ohne view_url) werden übersprungen.
+    """
+    from transcription import downloader, youtube
+    from transcription.types import Recording
+
+    # video_id -> {"title": str|None, "url": kanonische watch-URL}
+    found: dict[str, dict] = {}
+
+    # Quelle 1: direkte Links im Seiten-HTML.
+    for link in youtube.extract_youtube_links(html):
+        found.setdefault(
+            link["video_id"], {"title": link["title"], "url": link["url"]}
+        )
+
+    # Quelle 2: mod/url-Aktivitäten auflösen.
+    activities = _extract_activities(
+        soup, {"course_id": course_id, "name": course_name or course_id}
+    )
+    for act in activities:
+        if act.get("modtype") != "url":
+            continue
+        view_url = act.get("view_url")
+        if not view_url:
+            log.info("Überspringe gesperrte/linklose Aktivität: %s", act.get("name"))
+            continue
+        try:
+            target = _extract_url_target(session, _normalize_absolute_url(view_url))
+        except Exception as exc:
+            log.warning("mod/url nicht auflösbar (%s): %s", act.get("name"), exc)
+            continue
+        if not target:
+            continue
+        video_id = youtube.parse_youtube_id(target)
+        if not video_id:
+            continue  # Ziel ist kein YouTube-Link.
+        entry = found.setdefault(
+            video_id,
+            {"title": None, "url": f"https://www.youtube.com/watch?v={video_id}"},
+        )
+        if act.get("name"):  # mod/url-Aktivitätsname ist der bessere Titel.
+            entry["title"] = act["name"]
+
+    recordings_out = []
+    for video_id, info in found.items():
+        watch_url = info["url"]
+        title = info["title"]
+        if _youtube_title_needs_probe(title):
+            title = downloader.fetch_youtube_title(watch_url)
+        title = title or f"Aufzeichnung {video_id}"
+        recordings_out.append(
+            Recording(
+                cmid="yt",                 # konstanter Namespace → globaler Dedupe pro video_id
+                title=title,
+                source_url=watch_url,
+                course_id=course_id,
+                episode_id=video_id,       # stabiler Diskriminator (recording_key)
+                media_url=watch_url,
+                recorded_at=None,          # YouTube-Upload-Datum ≠ Aufzeichnungsdatum → nie raten
+                course_shortname=course_shortname,
+                course_name=course_name,
+                source_kind="youtube",
+            )
+        )
+    return recordings_out
+
+
+def _open_transcribe_connection(*, dry_run: bool) -> sqlite3.Connection:
+    """Öffnet den Transkriptions-State; Dry-Runs arbeiten ausschließlich im RAM."""
+    conn = sqlite3.connect(":memory:") if dry_run else init_db()
+    init_transcribe_schema(conn)
+    return conn
+
+
+def cmd_transcribe_url(
+    *,
+    url: str,
+    force: bool = False,
+    limit: int | None = None,
+    dry_run: bool = False,
+):
+    """Transkribiert YouTube-Videos, die unter einer LearnWeb-Abschnitts-/Seiten-URL liegen.
+
+    Eigenständiger Pfad neben dem kursweiten Opencast-`cmd_transcribe`. Nutzt einen
+    GARANTIERT schreibfreien Notion-Lookup (`notion_query_courses_db`) statt
+    `cmd_sync_courses`, damit `--dry-run` nichts nach Notion schreibt. Untertitel
+    zuerst (cookie-frei), sonst On-Device-Whisper. `--force` ist hier zulässig,
+    weil die URL die Eingrenzung darstellt.
+    """
+    import shutil
+
+    from transcription import downloader, manifest, notion_blocks, transcriber
+
+    if not NOTION_TOKEN:
+        log.error("NOTION_TOKEN nicht gesetzt – bitte in .env eintragen")
+        sys.exit(1)
+    if not dry_run and not NOTION_MEETING_DB_ID:
+        log.error("NOTION_MEETING_DB_ID nicht gesetzt – bitte in .env eintragen")
+        sys.exit(1)
+
+    lock = _acquire_transcribe_lock(TRANSCRIBE_LOCK_PATH)
+    if lock is None:
+        log.warning("Ein transcribe-Lauf ist bereits aktiv – beende.")
+        return
+
+    session = requests.Session()
+    session.headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+
+    failures: list[dict] = []
+    processed = 0
+    try:
+        if not login(session):
+            sys.exit(1)
+
+        # Abschnitts-/Seiten-HTML laden.
+        resp = session.get(url, timeout=60)
+        resp.raise_for_status()
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Kurs-ID ableiten – harter Fehler statt Abschnitts-ID zu missbrauchen.
+        course_id = _parse_section_course_id(soup, html)
+        if not course_id:
+            log.error("Kurs-ID konnte aus der Seite nicht abgeleitet werden: %s", url)
+            sys.exit(1)
+
+        # Schreibfreier (read-only) Notion-Lookup für die Kurs-Verlinkung.
+        try:
+            by_course = notion_query_courses_db().get("by_course_id", {})
+        except Exception as exc:
+            log.warning("Notion-Kurs-Lookup fehlgeschlagen (%s) – ohne Kurs-Relation.", exc)
+            by_course = {}
+        row = by_course.get(course_id)
+        course_page_id = row["page_id"] if row else None
+        course_shortname = row["lw_id"] if row else None
+        course_name = _extract_section_course_name(soup)
+
+        recs = discover_youtube_recordings(
+            session, soup, html,
+            course_id=course_id,
+            course_shortname=course_shortname,
+            course_name=course_name,
+        )
+        if not recs:
+            log.warning("Keine YouTube-Videos im Abschnitt gefunden: %s", url)
+            return
+        log.info(
+            "Abschnitt: %d YouTube-Video(s), Kurs-ID=%s%s",
+            len(recs), course_id,
+            "" if course_page_id else " (kein Notion-Kurs verknüpft)",
+        )
+
+        conn = _open_transcribe_connection(dry_run=dry_run)
+        try:
+            for rec in recs:
+                if limit is not None and processed >= limit:
+                    log.info("Limit %d erreicht – beende Lauf.", limit)
+                    break
+                result = _process_recording(
+                    conn, session, rec,
+                    course_page_id=course_page_id,
+                    force=force, dry_run=dry_run,
+                    modules=(downloader, manifest, notion_blocks, transcriber),
+                    shutil_mod=shutil,
+                )
+                if result == "processed":
+                    processed += 1
+                elif isinstance(result, dict):
+                    failures.append(result)
+        finally:
+            conn.close()
+    finally:
+        lock.close()
+
+    print("\n" + "=" * 60)
+    print(f"✓ Transkription (URL): {processed} Video(s) verarbeitet, {len(failures)} Fehler.")
+    print("=" * 60)
+    _notify_transcribe_failures(failures)
+    if failures:
+        sys.exit(2)
+
+
 def cmd_transcribe(
     *,
     force: bool = False,
@@ -2992,6 +3253,7 @@ def cmd_transcribe(
     course: str | None = None,
     limit: int | None = None,
     dry_run: bool = False,
+    url: str | None = None,
 ):
     """Lokaler Transkriptions-Worker: Opencast-Aufzeichnungen → Whisper → Notion.
 
@@ -3001,21 +3263,29 @@ def cmd_transcribe(
     Batches anhängen (resume-fähig) → done. Jeder Übergang wird sofort persistiert.
 
     Args:
-        force: re-transkribiert die per --cmid/--course eingegrenzten Aufzeichnungen
+        force: re-transkribiert die per --cmid/--course/--url eingegrenzten Aufzeichnungen
             und ERSETZT den Body bestehender Seiten (keine Duplikate). Ohne
-            --cmid/--course unzulässig (verhindert Massen-Reprocessing).
+            --cmid/--course/--url unzulässig (verhindert Massen-Reprocessing).
         cmid: nur Aufzeichnungen dieser Moodle-cmid verarbeiten.
         course: nur diesen Kurs (course_id oder Shortname) verarbeiten.
         limit: Höchstzahl tatsächlich transkribierter Aufzeichnungen pro Lauf.
         dry_run: Download + Transkription ausführen, aber NICHT nach Notion schreiben
             (Zustand wird hinterher zurückgesetzt, DB bleibt unverändert).
+        url: LearnWeb-Abschnitts-/Seiten-URL; transkribiert die dort verlinkten
+            YouTube-Videos (delegiert an cmd_transcribe_url). Schließt --cmid/--course aus.
     """
     import shutil
 
     from transcription import downloader, manifest, notion_blocks, recordings, transcriber
 
+    # YouTube-/Abschnitts-URL-Pfad ist eine eigenständige Funktion (schreibfreier
+    # Notion-Lookup, cookie-freier Download). Vor dem Force-Guard, da --force --url gültig ist.
+    if url:
+        cmd_transcribe_url(url=url, force=force, limit=limit, dry_run=dry_run)
+        return
+
     if force and not (cmid or course):
-        log.error("--force erfordert --cmid oder --course (kein Massen-Reprocessing).")
+        log.error("--force erfordert --cmid, --course oder --url (kein Massen-Reprocessing).")
         sys.exit(1)
     if not NOTION_TOKEN:
         log.error("NOTION_TOKEN nicht gesetzt – bitte in .env eintragen")
@@ -3054,8 +3324,7 @@ def cmd_transcribe(
             log.warning("Keine passenden Kurse mit SyncContent=true gefunden.")
             return
 
-        conn = init_db()
-        init_transcribe_schema(conn)
+        conn = _open_transcribe_connection(dry_run=dry_run)
         try:
             for course_id, info in active_courses:
                 course_obj = {
@@ -3165,25 +3434,59 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1) Download + Audio-Extraktion
-        stage = "download"
-        media_path = downloader.download_media(session, rec, work_dir)
-        audio_path = downloader.extract_audio(media_path, work_dir)
-        duration = downloader.probe_duration(media_path)
-        manifest.set_status(
-            conn, key, "downloaded",
-            media_path=str(media_path), audio_path=str(audio_path),
-            duration_seconds=duration,
-        )
+        # 1)+2) Acquisition: Transkript-Segmente beschaffen (quellspezifisch).
+        if rec.source_kind == "youtube":
+            # YouTube: Untertitel zuerst (cookie-frei), nur sonst Audio + Whisper.
+            stage = "subtitles"
+            segments = downloader.fetch_youtube_subtitles(
+                rec, work_dir, langs=_youtube_subtitle_langs()
+            )
+            if segments:
+                # Untertitel vorhanden → Download/Audio/Whisper komplett übersprungen.
+                model_label = "youtube-subs"
+                duration = segments[-1].end if segments else None
+                manifest.set_status(
+                    conn, key, "transcribed",
+                    model=model_label, duration_seconds=duration,
+                )
+            else:
+                # Kein brauchbarer Untertitel → genau ein Audio-/Whisper-Fallback.
+                stage = "download"
+                media_path = downloader.download_youtube_audio(rec, work_dir)
+                audio_path = downloader.extract_audio(media_path, work_dir)
+                duration = downloader.probe_duration(media_path)
+                manifest.set_status(
+                    conn, key, "downloaded",
+                    media_path=str(media_path), audio_path=str(audio_path),
+                    duration_seconds=duration,
+                )
+                stage = "transcribe"
+                segments, model_label = transcriber.transcribe(
+                    audio_path, language=WHISPER_LANGUAGE, model=WHISPER_MODEL,
+                )
+                if not segments:
+                    raise RuntimeError("empty_transcript")
+                manifest.set_status(conn, key, "transcribed", model=model_label)
+        else:
+            # 1) Download + Audio-Extraktion (Opencast, unverändert)
+            stage = "download"
+            media_path = downloader.download_media(session, rec, work_dir)
+            audio_path = downloader.extract_audio(media_path, work_dir)
+            duration = downloader.probe_duration(media_path)
+            manifest.set_status(
+                conn, key, "downloaded",
+                media_path=str(media_path), audio_path=str(audio_path),
+                duration_seconds=duration,
+            )
 
-        # 2) Transkription (On-Device-Whisper)
-        stage = "transcribe"
-        segments, model_label = transcriber.transcribe(
-            audio_path, language=WHISPER_LANGUAGE, model=WHISPER_MODEL,
-        )
-        if not segments:
-            raise RuntimeError("empty_transcript")
-        manifest.set_status(conn, key, "transcribed", model=model_label)
+            # 2) Transkription (On-Device-Whisper)
+            stage = "transcribe"
+            segments, model_label = transcriber.transcribe(
+                audio_path, language=WHISPER_LANGUAGE, model=WHISPER_MODEL,
+            )
+            if not segments:
+                raise RuntimeError("empty_transcript")
+            manifest.set_status(conn, key, "transcribed", model=model_label)
 
         # 3) Notion-Blöcke + Body-Hash
         blocks = notion_blocks.build_transcript_blocks(segments, with_timestamps=True)
@@ -3196,7 +3499,8 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
                 "[dry-run] %s: %d Segmente, %d Blöcke, Backend=%s, Dauer=%.0fs",
                 key, len(segments), len(blocks), model_label, duration or 0.0,
             )
-            # DB unverändert lassen: Zustand zurücksetzen, da nichts nach Notion ging.
+            # CLI-Dry-Runs nutzen eine In-Memory-DB. Reset hält die Funktion auch
+            # bei direktem Aufruf mit einer externen Connection wiederholbar.
             manifest.reset_for_force(conn, key)
             return "processed"
 
@@ -3279,7 +3583,7 @@ commands:
   diagnose-resource-errors
                 Probe open resource rows read-only and classify failures
   export-zips   Download all courses as ZIP files (backup mode)
-  transcribe    Lokaler Mac-Worker: Opencast-Aufzeichnungen -> Whisper -> Notion
+  transcribe    Lokaler Mac-Worker: Opencast/YouTube -> Untertitel/Whisper -> Notion
 """,
     )
     parser.add_argument(
@@ -3310,19 +3614,28 @@ commands:
         "--force",
         action="store_true",
         help="transcribe: bereits transkribierte Aufzeichnungen neu erstellen und "
-             "Body ersetzen (erfordert --cmid oder --course)",
+             "Body ersetzen (erfordert --cmid, --course oder --url)",
     )
-    parser.add_argument(
+    # --cmid / --course / --url grenzen den transcribe-Lauf gegenseitig exklusiv ein.
+    transcribe_scope = parser.add_mutually_exclusive_group()
+    transcribe_scope.add_argument(
         "--cmid",
         type=str,
         default=None,
         help="transcribe: nur Aufzeichnungen dieser Moodle-cmid verarbeiten",
     )
-    parser.add_argument(
+    transcribe_scope.add_argument(
         "--course",
         type=str,
         default=None,
         help="transcribe: nur diesen Kurs (course_id oder Shortname) verarbeiten",
+    )
+    transcribe_scope.add_argument(
+        "--url",
+        type=str,
+        default=None,
+        help="transcribe: YouTube-Videos aus einer LearnWeb-Abschnitts-/Seiten-URL "
+             "transkribieren (Untertitel zuerst, sonst Whisper)",
     )
     parser.add_argument(
         "--dry-run",
@@ -3358,6 +3671,7 @@ commands:
             course=args.course,
             limit=args.limit,
             dry_run=args.dry_run,
+            url=args.url,
         )
 
 
