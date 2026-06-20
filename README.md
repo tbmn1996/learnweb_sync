@@ -2,6 +2,7 @@
 
 Synchronisiert LearnWeb (Moodle, Uni Münster) automatisch mit Notion.
 Neue `resource`-, `folder`-, `url`- und `page`-Aktivitäten werden erkannt und als Notion-Seiten angelegt. Dateien landen dabei direkt als Notion-Anhänge, sodass Notion AI sie lesen kann.
+Ein separater lokaler Worker transkribiert Opencast- und YouTube-Aufzeichnungen nach Notion.
 
 ## Betrieb
 
@@ -40,6 +41,21 @@ CLI-Befehle für lokale Läufe:
 | `python learnweb_sync.py run` | `sync-courses` + `scan` + `push` in einem Schritt |
 | `python learnweb_sync.py diagnose-resource-errors --limit 50` | Offene `resource`-Fälle read-only klassifizieren und nach Fehlergrund gruppieren |
 | `python learnweb_sync.py export-zips` | Alle Kurse als ZIP-Backup herunterladen |
+| `python learnweb_sync.py transcribe` | Opencast-Aufzeichnungen aller aktiven Kurse lokal transkribieren |
+| `python learnweb_sync.py transcribe --cmid <ID>` | Eine Opencast-Aktivität transkribieren; alternativ mit `--course <ID oder Shortname>` eingrenzen |
+| `python learnweb_sync.py transcribe --url <LearnWeb-URL>` | YouTube-Videos aus einer LearnWeb-Abschnittsseite transkribieren: Untertitel zuerst, sonst lokales Whisper |
+
+Für den lokalen Transkriptions-Worker zusätzlich installieren:
+
+```bash
+pip install -r requirements-transcription.txt
+brew install ffmpeg
+```
+
+`--url`, `--cmid` und `--course` sind gegenseitig exklusiv. YouTube-Aufrufe laufen ohne
+LearnWeb-Cookies. `--dry-run` schreibt weder nach Notion noch dauerhaft in `state.db`;
+`--force` ist nur zusammen mit einer der drei Eingrenzungen zulässig. Die Railway-Instanz
+führt den Transkriptions-Worker nicht aus.
 
 Lokal läuft der Sync direkt als CLI — kein `server.py` nötig.
 
@@ -100,10 +116,14 @@ learnweb_sync/
 │   └── sync.yml              # Manueller Fallback-Trigger (kein eigener Python-Lauf)
 ├── .python-version           # Python 3.12 (für Railpack)
 ├── docs/PLAN.md              # Architektur- und Entwicklungsplan
+├── launchd/                  # Nicht automatisch aktivierte Vorlage für den lokalen Worker
 ├── learnweb_sync.py          # CLI + Sync-Logik
+├── transcription/            # Discovery, Download, Transkription und Manifest-Logik
+├── tests/                    # Unit-Tests für Sync und Transkription
 ├── server.py                 # Railway-Orchestrator (Flask + APScheduler)
 ├── railway.toml              # Railway-Konfiguration (Start-Command, Health-Check)
-├── requirements.txt
+├── requirements.txt          # Railway- und Sync-Abhängigkeiten
+├── requirements-transcription.txt  # Zusätzliche lokale Whisper-/yt-dlp-Abhängigkeiten
 ├── state.db                  # Manifest (gitignored; auf Railway via Volume persistent)
 └── logs/                     # Logdateien (gitignored; lokal wenn LOG_DIR gesetzt)
 ```

@@ -1,0 +1,29 @@
+# Zusatz-Abhängigkeiten NUR für den lokalen Transkriptions-Worker (`transcribe`).
+#
+# WICHTIG (Railway-Isolation, Plan §9): Diese Datei wird vom Railway-Image NICHT
+# installiert — der Cloud-Dienst nutzt weiterhin nur `requirements.txt` für den
+# Datei-Sync (scan/push). Diese Deps laufen ausschließlich lokal auf dem Mac
+# (Apple Silicon), weil On-Device-Whisper Metal/MLX braucht.
+#
+# Installation (erst nach Freigabe) in der bestehenden venv:
+#   cd /Users/thomasniermann/Scripts/learnweb_sync
+#   source .venv/bin/activate
+#   pip install -r requirements-transcription.txt
+#   brew install ffmpeg        # liefert ffmpeg + ffprobe (NICHT über pip)
+
+# --- Whisper-Backend ---
+# Primär: Apple-Silicon-natives Whisper über MLX. Installiert sich NUR auf
+# Apple Silicon (arm64). Auf anderer Hardware diese Zeile auskommentieren.
+mlx-whisper>=0.4.0 ; platform_machine == "arm64" and sys_platform == "darwin"
+
+# Plattformneutraler Fallback (CPU/CUDA). Wird automatisch genutzt, wenn MLX
+# nicht importierbar ist (Capability-Detection in transcription/transcriber.py).
+faster-whisper>=1.0.0
+
+# --- Download / Audio-Extraktion ---
+# Opencast/HLS-Download mit Moodle-Session-Cookies.
+yt-dlp>=2024.1.0
+
+# Hinweis: ffmpeg + ffprobe sind System-Binaries (brew install ffmpeg), KEINE
+# pip-Pakete. Pfade bei Bedarf über FFMPEG_BIN / FFPROBE_BIN / YT_DLP_BIN
+# in der .env überschreiben.

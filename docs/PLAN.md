@@ -8,8 +8,7 @@
 > Produktion (`KurseLearnWeb`, `Learnweb Inhalte`); die ursprünglichen Produktions-DBs
 > wurden zu `KurseLearnWeb (OLD)` / `Learnweb Inhalte (OLD)` umbenannt und logisch
 > archiviert (Backlinks intakt für historische Daten). Property-Namen und DB-Titel
-> tragen kein Suffix mehr — Code-Anpassung erfolgte in Commit `0da6739`. Vollständige
-> Migrationshistorie: `~/.claude/plans/use-this-plan-enchanted-cascade.md`.
+> tragen kein Suffix mehr.
 
 ---
 
@@ -85,11 +84,14 @@ python learnweb_sync.py sync-courses  # Alle belegten Kurse erkennen und fehlend
 python learnweb_sync.py scan          # Nur Kurse mit SyncContent=true scrapen
 python learnweb_sync.py push          # Neue Manifest-Einträge aktiver Kurse → Notion-Seite anlegen
 python learnweb_sync.py run           # sync-courses + scan + push
+python learnweb_sync.py diagnose-resource-errors  # Offene Resource-Fehler read-only klassifizieren
 python learnweb_sync.py export-zips   # Backup: alle Kurse als ZIP herunterladen
+python learnweb_sync.py transcribe    # Lokaler Worker für Opencast- und YouTube-Aufzeichnungen
 ```
 
 Der produktive Einstiegspunkt auf Railway ist `server.py` (Flask + APScheduler), das
-`learnweb_sync.py run` als Subprozess startet.
+`learnweb_sync.py run` als Subprozess startet. `transcribe` läuft ausschließlich lokal auf
+dem Mac und ist kein Teil des Railway-Prozesses.
 
 ---
 
@@ -142,6 +144,28 @@ Der produktive Einstiegspunkt auf Railway ist `server.py` (Flask + APScheduler),
 [8. Manifest aktualisieren]  notion_id + status='synced' in state.db
 ```
 
+### Lokaler Transkriptionsfluss
+
+```
+[transcribe --cmid/--course]              [transcribe --url <LearnWeb-Seite>]
+           │                                           │
+           ▼                                           ▼
+[Opencast-Episoden finden]                 [YouTube-Links cookie-frei finden]
+           │                                           │
+           ▼                                           ▼
+[Medien laden + Whisper]                   [Untertitel, sonst Audio + Whisper]
+           └──────────────────────┬────────────────────┘
+                                  ▼
+                 [transcripts-Zustand in state.db]
+                                  ▼
+          [Learnweb-Inhalt + Meeting-Notiz in Notion]
+```
+
+Der Worker beansprucht Aufzeichnungen atomar per SQLite und `flock`, persistiert jeden
+Zwischenstand und kann nach Abbrüchen fortsetzen. Der stabile Schlüssel lautet
+`{cmid}-{sha1(episode_id|media_url)[:12]}`. `--dry-run` hinterlässt weder Notion-Writes noch
+dauerhafte Änderungen in `state.db`.
+
 ### HTML-Parsing (Kursseiten)
 
 Jede Aktivität ist ein `<li data-for="cmitem" data-id="{cmid}">`:
@@ -165,7 +189,7 @@ Jede Aktivität ist ein `<li data-for="cmitem" data-id="{cmid}">`:
 | `page` | Metadaten im Manifest | Klartext nach Notion-Paragrafen |
 | `forum` | Metadaten im Manifest | Forum-Seite scrapen (Phase 5) |
 | `url` | Metadaten im Manifest | Nur URL in Notion eintragen |
-| `opencast` | Metadaten im Manifest | Kein Download (Video zu groß) |
+| `opencast` | Metadaten im Manifest | Separater lokaler `transcribe`-Pfad, nie Railway-`push` |
 | `assign` | Metadaten im Manifest | Deadline in Notion (Phase 5) |
 | `label` | Ignorieren | – |
 
@@ -189,6 +213,11 @@ CREATE TABLE IF NOT EXISTS resources (
     status           TEXT DEFAULT 'new'  -- new / synced / error / removed
 );
 ```
+
+Der lokale Worker ergänzt die Tabelle `transcripts`. Sie speichert Recording-Key,
+Quellmetadaten, Claim-/Retry-Status, temporäre Pfade, Notion-Page-IDs und den Append-Fortschritt.
+Die Schema-Initialisierung erfolgt nur im `transcribe`-Pfad, damit der Railway-Sync unverändert
+bleibt.
 
 ### Notion-Integration
 
@@ -246,9 +275,13 @@ learnweb_sync/
 ├── .python-version           # Python 3.12 (für Railpack)
 ├── README.md
 ├── requirements.txt          # requests, beautifulsoup4, python-dotenv, Flask, APScheduler, gunicorn
+├── requirements-transcription.txt  # lokale Whisper-/yt-dlp-Abhängigkeiten
 ├── railway.toml              # Start-Command, Health-Check, Restart-Policy
 ├── learnweb_sync.py          # CLI + Sync-Logik
 ├── server.py                 # Railway-Orchestrator (Flask + APScheduler)
+├── transcription/            # Discovery, Download, Transkription und Manifest
+├── tests/                    # Unit-Tests für Sync und Transkription
+├── launchd/                  # nicht automatisch aktivierte Worker-Vorlage
 ├── state.db                  # gitignored; auf Railway via /data-Volume persistent
 ├── downloads/                # gitignored; temporäre Dateien während eines Runs
 ├── docs/
@@ -285,12 +318,21 @@ learnweb_sync/
 - Env-Variablen setzen (siehe README)
 - Zwei neue GitHub Secrets: `LEARNWEB_SYNC_WEBHOOK_URL`, `SYNC_WEBHOOK_SECRET`
 
-**~~Produktions-Switchover~~ (durchgeführt 2026-05-19):**
+**Produktions-Switchover (abgeschlossen am 2026-05-19):**
 - Aktuelle DB-IDs liegen in `.env`. Die DBs heißen jetzt `KurseLearnWeb` und
   `Learnweb Inhalte` (ehemals mit `(TESTING)`-Suffix); die früheren Produktions-DBs
   sind jetzt `KurseLearnWeb (OLD)` / `Learnweb Inhalte (OLD)` und nur noch für
   historische Backlinks aktiv.
 - `COURSE_MAP` muss bei jedem Semesterwechsel um neue aktive Kurse erweitert werden.
+
+### Lokaler Transkriptions-Worker ✅ ABGESCHLOSSEN
+
+**Deliverables:**
+- Opencast-Discovery und lokale Whisper-Transkription mit Crash-/Resume-sicherem Manifest
+- YouTube-Discovery über LearnWeb-Seiten, Untertitel-Cascade und cookie-freier Audio-Fallback
+- Idempotente Notion-Erstellung für Learnweb-Inhalt und Meeting-Notiz
+- `--cmid`, `--course`, `--url`, `--limit`, `--force` und write-freier `--dry-run`
+- Launchd-Vorlage für den lokalen Mac; keine Aktivierung durch das Repository
 
 ### Phase 4 — Notion-Button Trigger (optional, zurückgestellt)
 
@@ -311,11 +353,12 @@ Scope erst definieren wenn Phase 3 stabil und im Einsatz.
 4. **Single-Replica** — Railway-Volume erlaubt keinen Multi-Replica-Betrieb.
 5. **`state.db` nie in main-Branch** — gitignored; Persistenz über Railway-Volume.
 6. **Organizer-Skill bleibt extern** — Sync = remote→Notion. Organize = lokal→kuratiert.
+7. **Transkription bleibt lokal** — keine Whisper-Abhängigkeiten und kein Opencast-Download auf Railway.
+8. **Keine LearnWeb-Cookies an YouTube** — YouTube-Untertitel und -Audio laufen cookie-frei.
 
 ---
 
 ## Offene Punkte / Entscheidungen
 
-- **Notion API Version**: Aktuell `2022-06-28` (letzte stabile); bei Bedarf aktualisieren.
-- **Produktions-Switchover**: `NOTION_LW_DB_ID` + `NOTION_COURSES_DB_ID` auf Produktionswerte setzen, lokal testen.
+- **Notion API Version**: Der Code ist auf `2022-06-28` gepinnt; eine Aktualisierung erfolgt separat.
 - **Notion-Button für Webhook**: Notion-Buttons können POST senden — prüfen ob Railway-URL direkt nutzbar ist (Auth-Header?).

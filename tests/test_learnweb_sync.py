@@ -3024,7 +3024,7 @@ class LearnwebSyncTests(unittest.TestCase):
         html_without_courses = """
         <html>
           <body>
-            <!-- No <a> tags matching /course/view.php?id=\d+ with enrolled class -->
+            <!-- No <a> tags matching /course/view.php?id=\\d+ with enrolled class -->
           </body>
         </html>
         """

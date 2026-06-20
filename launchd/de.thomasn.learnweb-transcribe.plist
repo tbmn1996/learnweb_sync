@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  VORLAGE für den lokalen Transkriptions-Worker (learnweb_sync `transcribe`).
+
+  Diese Datei wird NICHT automatisch aktiviert. Zum Einrichten (erst nach
+  expliziter Freigabe, CLAUDE.md §5):
+
+    1. Kopieren:
+       cp launchd/de.thomasn.learnweb-transcribe.plist ~/Library/LaunchAgents/
+    2. Syntax prüfen:
+       plutil -lint ~/Library/LaunchAgents/de.thomasn.learnweb-transcribe.plist
+    3. Laden:
+       launchctl load ~/Library/LaunchAgents/de.thomasn.learnweb-transcribe.plist
+    4. Status:
+       launchctl list | grep learnweb-transcribe
+
+  Läuft bei jedem Login (RunAtLoad) sowie täglich 13:00 und 20:00 Uhr.
+  Der Lock in learnweb_sync (flock) verhindert Doppelläufe, wenn ein manueller
+  Lauf und ein launchd-Lauf zusammentreffen.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>de.thomasn.learnweb-transcribe</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/thomasniermann/Scripts/learnweb_sync/.venv/bin/python</string>
+        <string>/Users/thomasniermann/Scripts/learnweb_sync/learnweb_sync.py</string>
+        <string>transcribe</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/thomasniermann/Scripts/learnweb_sync</string>
+
+    <!-- Homebrew-Pfad muss explizit gesetzt sein: launchd erbt KEINE Login-Shell.
+         ffmpeg/ffprobe/yt-dlp liegen unter /opt/homebrew/bin. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Beim Login einmal nachholen (Mac ist nicht 24/7). -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Zwei feste Zeiten pro Tag. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key><integer>20</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <!-- Niedrige Priorität: Transkription ist rechenintensiv, soll aber den
+         Vordergrund nicht ausbremsen. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/thomasniermann/Scripts/learnweb_sync/logs/transcribe.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/thomasniermann/Scripts/learnweb_sync/logs/transcribe.err.log</string>
+</dict>
+</plist>
