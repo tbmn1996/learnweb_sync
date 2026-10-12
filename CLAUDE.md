@@ -1,5 +1,13 @@
 # learnweb_sync — Agent-Orientierung
 
+## Prüfstand und Arbeitsgrenze
+
+Die [Semesterprüfung vom 12.10.2026](docs/PRUEFBERICHT.md) dokumentiert den damaligen
+Auditstand; ihr ursprünglicher Auftrag war auf Prüfung und Dokumentation begrenzt. Ein
+separater Reparaturplan wurde umgesetzt und live geprüft. Den abgenommenen Stand und die
+verbleibenden Providergrenzen führt die [Reparatur-Nachprüfung](docs/reviews/261012-Reparatur-Abnahme.md).
+Für Betrieb und Wiederherstellung zuerst [BETRIEB.md](docs/BETRIEB.md) und diese aktuellen Befunde lesen.
+
 ## Was das Projekt tut
 Synchronisiert Vorlesungen, Inhalte und Aktivitäten aus LearnWeb (Uni-Münster Moodle) in zwei Notion-Datenbanken: eine für Kursverwaltung, eine für strukturierte Lehr-Inhalte.
 
@@ -12,7 +20,7 @@ python learnweb_sync.py <command>
 
 **Verfügbare Befehle:**
 - `sync-courses` — Kurse in KurseLearnWeb (Notion) prüfen/anlegen
-- `scan` — LearnWeb scrapen, neue Aktivitäten im Manifest erfassen
+- `scan` — zuerst Kursabgleich (kann Notion ändern), danach neue Aktivitäten im Manifest erfassen
 - `push` — Pushbare Inhalte nach Notion schreiben/aktualisieren
 - `run` — sync-courses + scan + push (produktiver Railway-Ablauf)
 - `diagnose-resource-errors` — Offene Resource-Fehler klassifizieren
@@ -47,8 +55,10 @@ python learnweb_sync.py <command>
 ## Fallstricke
 - **Semester-/DB-Wechsel:** Nach `CURRENT_SEMESTER_OVERRIDE` oder `NOTION_LW_DB_ID` wird `state.db` nicht automatisch zurückgesetzt. Vor einem Backfill Pfad und Bestand prüfen; die Produktions-DB nicht ungeprüft löschen.
 - **Manifest-Struktur:** Ist abhängig von LearnWeb-HTML-Struktur; Änderungen bei Moodle-Updates führen zu Parse-Fehlern. **Logs prüfen** vor `push`.
-- **Notion Push-Batches:** Intern begrenzt auf ~100 Pages/Update pro Aufruf; bei großen Kursen kann `push` mehrere Minuten dauern.
-- **SSO-Timeouts:** LearnWeb-Session läuft nach ~2h ab; bei langen `scan`-Läufen ggf. neu-Login nötig (Code prüft nicht automatisch).
+- **Notion-Batches:** Seiten werden einzeln angelegt; angehängte Body-Blöcke in Batches bis 100.
+- **SSO-Timeouts:** Die Session kann ablaufen; der Code meldet sich nicht automatisch erneut an. Eine feste Laufzeit ist nicht aktuell verifiziert.
+- **Lokales Manifest:** Die lokale `state.db` ist vom Railway-Volume getrennt und veraltet. Kein lokales `run` als unverbindlicher Test gegen die produktiven Notion-DBs.
+- **Erfolgsmeldungen:** `ae1b0a0` prüft Folder-Dateien auch bei unveränderten Links auf Inhaltsänderungen und begrenzt Wiederholungen auf lesende LearnWeb-GETs; Schreibvorgänge werden nicht wiederholt. Der Commit ist gepusht und deployed; 210 Offline-Tests bestehen. Aktueller Bestand: 42 reguläre Semesterinhalte, ein Transkript, 106 bytegleich geprüfte Originaldateien; 18 Provider-Blocker bleiben offen. Details und abgeschlossene Byte-/Folder-Abnahmen stehen im [Reparaturbericht](docs/reviews/261012-Reparatur-Abnahme.md).
 
 ## Transkriptions-Worker (`transcribe`, nur lokal auf dem Mac)
 
@@ -60,12 +70,24 @@ Findet YouTube-Videos und Opencast-Vorlesungsaufzeichnungen, transkribiert sie *
 
 2. **`--cmid N` / `--course X`** — Findet Opencast-Aufzeichnungen in den Kursen, transkribiert sie mit Whisper.
 
-**Sicherheit:** YouTube-Aufrufe laufen ohne LearnWeb-Cookies (Trennung LearnWeb/Google). Der `--url`-Pfad nutzt nur read-only Notion-Lookups → `--dry-run` schreibt garantiert nichts.
+**Dry-Run:** YouTube-Aufrufe laufen ohne LearnWeb-Cookies. Im aktuellen lokalen Reparaturstand
+nutzen `--url` und Opencast-`--dry-run` lesende Notion-Kursabfragen und eine In-Memory-DB; beide
+schreiben nicht nach Notion oder dauerhaft in `state.db`. Dry-Runs können Medien laden und
+Whisper ausführen. Diese Änderung ist in Commit `5547703` enthalten. Railway führt den
+Transkriptions-Worker grundsätzlich nicht aus.
 
 **Warum lokal-only:** On-Device-Whisper (MLX/Apple Silicon) läuft nicht auf Railway (CPU-Linux). Der Railway-Dienst macht weiterhin nur `run`/`scan`/`push` (Dateien). `opencast` ist bewusst **nicht** in `PUSHABLE_MODTYPES`, sondern in der separaten Konstante `TRANSCRIBABLE_MODTYPES` — der Railway-Pfad bleibt unverändert.
 
 **Ablauf (Zustandsautomat, je Aufzeichnung sofort persistiert):**
-`login` → sync-markierte Kurse → opencast-Aktivitäten → Episoden-Discovery → atomares Claiming (SQLite + `flock`) → yt-dlp-Download → ffmpeg (16 kHz mono) → Whisper → create-or-find Inhalts-Eintrag + Meeting-Seite → Body in Batches (≤100 Blöcke, ≤1900 Zeichen) anhängen (resume-fähig) → `done`. Dedupe-Key: `{cmid}-{sha1(episode_id|media_url)[:12]}`, Tabelle `transcripts` in `state.db`.
+`login` → sync-markierte Kurse → opencast-Aktivitäten → Episoden-Discovery → atomares Claiming (SQLite + `flock`) → yt-dlp-Download → ffmpeg (16 kHz mono) → Whisper → create-or-find Inhalts-Eintrag + Meeting-Seite → Body in Batches (≤100 Blöcke, ≤1900 Zeichen) anhängen → `done`. Dedupe-Key: `{cmid}-{sha1(discriminator)[:12]}`, erste vorhandene Angabe aus Episode-ID, Medien-URL und Quell-URL; Tabelle `transcripts` in `state.db`.
+
+**Recovery:** Die fehlende Wiederaufnahme nach hartem Abbruch und das unsichere `--force` waren
+Befunde des ursprünglichen Audit-Stands. Der aktuelle lokale Reparaturcode setzt Zwischenstände
+unter exklusiver Sperre fort und gleicht Remote-Blöcke vor Append oder Ersatz ab. Nur eindeutig
+eigene, unveränderte Blöcke werden gelöscht; manuelle oder nicht zuordenbare Inhalte bleiben
+geschützt. Eine reale Aufzeichnung wurde mit 12 von 12 zurückgelesenen Blöcken geprüft; Force-
+und Recovery-Verhalten auf Bestandsseiten bleiben durch isolierte Tests geschützt, nicht durch
+destruktive Live-Force-Läufe. Details und verbleibende Grenzen stehen im Reparaturbericht.
 
 **Paket `transcription/`:** `recordings.py` (Opencast-Discovery), `youtube.py` (YouTube-ID/Link-/Untertitel-Parsing), `downloader.py` (yt-dlp/ffmpeg/ffprobe und Untertitel-Cascade), `transcriber.py` (mlx-whisper primär, faster-whisper Fallback), `notion_blocks.py` (Segment→Absatz, Timestamps, Chunking), `manifest.py` (Key + Zustandsautomat), `types.py` (`Recording`, `Segment`, Quelltyp über `source_kind`).
 
@@ -82,7 +104,34 @@ brew install ffmpeg                              # ffmpeg + ffprobe (System-Bina
 
 **Automatisierung:** Vorlage `launchd/de.thomasn.learnweb-transcribe.plist` (RunAtLoad + täglich 13:00/20:00). Aktivierung (`launchctl load`) **erst nach expliziter Freigabe** (CLAUDE.md/Workspace §5).
 
+Am 12.10.2026 ist die Vorlage lokal weder installiert noch geladen.
+
 **Bekannte Einschränkungen (Stand 06/2026):**
 - **Aufzeichnungsdatum:** LearnWeb-Opencast liefert pro Episode kein verlässliches Datum (kein `created`/`start` im `window.episode`-JSON; Titel enthalten nur eine laufende Nummer). `recorded_at` bleibt daher bewusst leer, statt zu raten → in Notion bleibt `Datum` leer.
 - **Single-Episode-Format:** Manche Aktivitäten (z. B. einzelne BWL-VLs) liefern nur die Medien-URL ohne Metadaten → generischer Titel „Aufzeichnung &lt;cmid&gt;", keine `episode_id`. Transkription funktioniert trotzdem.
 - **Alte/abgemeldete Kurse:** Bei nicht mehr zugänglichen Kursen findet die Discovery 0 Aufzeichnungen.
+
+## Dokumentation und Roadmap
+
+- [README.md](README.md): Einstieg, CLI und Testbefehl.
+- [docs/PLAN.md](docs/PLAN.md): bestehendes Projektziel, Architektur und historische Lieferumfänge.
+- [docs/BETRIEB.md](docs/BETRIEB.md): Laufwege, Datenhaltung, Semesterwechsel und Wiederherstellung.
+- [docs/PRUEFBERICHT.md](docs/PRUEFBERICHT.md): historischer Auditstand vor der Reparatur;
+  [DSH-REVIEW.md](docs/DSH-REVIEW.md) hält die unabhängigen Reviews und verworfenen Gegenbehauptungen fest.
+- [docs/roadmap/README.md](docs/roadmap/README.md): bestehende Vorhaben und Zustände.
+
+Nach Änderungen die betroffenen Dokumente und Zustände nachziehen; neue oder verschobene
+Dokumente hier mit tatsächlichem Pfad verlinken. Vor jeder Roadmap-Änderung deren Pflegeregeln
+lesen. Sobald ein Vorhaben eigene Abnahmekriterien, mehrere Teile oder gegenseitige Verweise
+hat, gilt Übersicht plus eine Datei je Vorhaben; nur ohne diese Merkmale genügt eine kurze
+Roadmap-Datei. Die derzeitige Verzeichnisform ist wegen des vorhandenen Backfills erforderlich.
+Beim Formwechsel alle Inhalte, Zustände und gültigen Links erhalten, Projektverweise nachziehen;
+Löschungen bleiben freigabepflichtig. Neue Vorhaben und Änderungen des bestehenden Projektziels
+brauchen ausdrücklichen Auftrag oder Freigabe. Reine Pflege startet keine Zielplanung.
+
+Falls `project-doc-watcher` eingerichtet ist, vor Doku-Arbeit
+`$(git rev-parse --git-common-dir)/claudex-doc-watch/pruefprotokoll.md` auf offene Befunde lesen.
+Beim Erstellen der Semesterprüfung war noch kein solches Protokoll eingerichtet.
+Der relative Symlink `AGENTS.md -> CLAUDE.md` lässt Codex und Claude Code dieselbe
+Projektanleitung lesen. Nach Änderungen an einer der beiden Dateien den gemeinsamen
+Integritätscheck ausführen. Tests ausschließlich über `testlauf`.

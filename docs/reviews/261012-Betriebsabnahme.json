@@ -1,0 +1,2874 @@
+{
+  "schema": "learnweb-repair-acceptance/1",
+  "date": "2026-10-12",
+  "code_commit": "ae1b0a050c0a7796abc338ac5e2c48f351181b3a",
+  "offline_tests": 210,
+  "semester_content_rows": 42,
+  "semester_originals_byte_verified": 30,
+  "existing_course_activities": 80,
+  "existing_originals_byte_verified": 76,
+  "total_originals_byte_verified": 106,
+  "provider_blockers": [
+    {
+      "cmid": "4095464",
+      "name": "Wilantis_Netz.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "01_rucksack_solution.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "01_rucksack_template.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "02_schedule_solution.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "02_schedule_template.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "03_graphen_solution.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "03_graphen_template.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "04_kruskal_solution.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "04_kruskal_template.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "05_dfs_solution.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "05_dfs_template.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "06_Hierholzer_solution.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "06_Hierholzer_template.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "07_fibunacci_1d_solution.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "07_fibunacci_1d_template.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "08_coordinate_search2d_solution.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "08_coordinate_search2d_template.ipynb"
+    },
+    {
+      "cmid": "4117100",
+      "name": "dorf_adjazenz.pkl"
+    }
+  ],
+  "semester_final_files": [
+    {
+      "type": "file_result",
+      "cmid": "4207552",
+      "page_id": "3f7bf244-cadc-814a-82ac-e386321193ef",
+      "source_type": "resource",
+      "source_name": null,
+      "source_content_disposition_name": "Nightline_Folie.pdf",
+      "source_size": 328624,
+      "source_sha256": "ff60f29d0690e2928b9a1075990e92170d061c6f723639aad40b9c9059c237da",
+      "notion_name": "Nightline_Folie.pdf",
+      "notion_size": 328624,
+      "notion_sha256": "ff60f29d0690e2928b9a1075990e92170d061c6f723639aad40b9c9059c237da",
+      "notion_content_disposition_name": "Nightline_Folie.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4243238",
+      "page_id": "3f7bf244-cadc-8138-9032-c7c5dc90dc33",
+      "source_type": "resource",
+      "source_name": null,
+      "source_content_disposition_name": "bdvb_PraÌsentation_Vorstellung_SoSe26 Kopie.pdf",
+      "source_size": 676088,
+      "source_sha256": "47369e92d5905a831369c449303379e93486f16cd8855c87719847805e8ddaad",
+      "notion_name": "bdvb_Prasentation_Vorstellung_SoSe26_Kopie.pdf",
+      "notion_size": 676088,
+      "notion_sha256": "47369e92d5905a831369c449303379e93486f16cd8855c87719847805e8ddaad",
+      "notion_content_disposition_name": "bdvb_Prasentation_Vorstellung_SoSe26_Kopie.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4243348",
+      "page_id": "3f7bf244-cadc-81b3-b762-d5fbc35f3b18",
+      "source_type": "resource",
+      "source_name": null,
+      "source_content_disposition_name": "move_flyer.pdf",
+      "source_size": 2884699,
+      "source_sha256": "cd2809f998b5463d461d30b2673249518c0ae5a7557896741211ba07c3bc05a1",
+      "notion_name": "move_flyer.pdf",
+      "notion_size": 2884699,
+      "notion_sha256": "cd2809f998b5463d461d30b2673249518c0ae5a7557896741211ba07c3bc05a1",
+      "notion_content_disposition_name": "move_flyer.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4243298",
+      "page_id": "3f7bf244-cadc-8180-ae66-f625b3bc7a92",
+      "source_type": "resource",
+      "source_name": null,
+      "source_content_disposition_name": "muenster_invest_Recruiting_onepager.pdf",
+      "source_size": 73348,
+      "source_sha256": "ee0cfe9c12f898eced0e05ca3e7db9802a89f3bb3165dcdaf07f50a9a9712f25",
+      "notion_name": "muenster_invest_Recruiting_onepager.pdf",
+      "notion_size": 73348,
+      "notion_sha256": "ee0cfe9c12f898eced0e05ca3e7db9802a89f3bb3165dcdaf07f50a9a9712f25",
+      "notion_content_disposition_name": "muenster_invest_Recruiting_onepager.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4243345",
+      "page_id": "3f7bf244-cadc-81f2-9e54-f374c1ad40bc",
+      "source_type": "resource",
+      "source_name": null,
+      "source_content_disposition_name": "Talking_Economics_Kurzvorstellung.pdf",
+      "source_size": 327262,
+      "source_sha256": "a6adfd155092a6e9afb7b86af25664193233d4013f12008b80828fe2eb001cb7",
+      "notion_name": "Talking_Economics_Kurzvorstellung.pdf",
+      "notion_size": 327262,
+      "notion_sha256": "a6adfd155092a6e9afb7b86af25664193233d4013f12008b80828fe2eb001cb7",
+      "notion_content_disposition_name": "Talking_Economics_Kurzvorstellung.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207559",
+      "page_id": "3f7bf244-cadc-817e-a29b-ed78e1a6141c",
+      "source_type": "resource",
+      "source_name": null,
+      "source_content_disposition_name": "UMCC_Vorstellung_202627_WiSe.PDF",
+      "source_size": 2801461,
+      "source_sha256": "fdd3eb4d966d5d1fea5befe5b56e90fd29a5bbfb245608ef5d2b9e5dd5d86248",
+      "notion_name": "UMCC_Vorstellung_202627_WiSe.pdf",
+      "notion_size": 2801461,
+      "notion_sha256": "fdd3eb4d966d5d1fea5befe5b56e90fd29a5bbfb245608ef5d2b9e5dd5d86248",
+      "notion_content_disposition_name": "UMCC_Vorstellung_202627_WiSe.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "Kontrollergebnisse.pdf",
+      "source_content_disposition_name": "Kontrollergebnisse.pdf",
+      "source_size": 265148,
+      "source_sha256": "d00334466b45f5edc0a844242b9db2096b63e3d1f7c6dbd6f7da93a8db5e1d80",
+      "notion_name": "Kontrollergebnisse.pdf",
+      "notion_size": 265148,
+      "notion_sha256": "d00334466b45f5edc0a844242b9db2096b63e3d1f7c6dbd6f7da93a8db5e1d80",
+      "notion_content_disposition_name": "Kontrollergebnisse.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0000.pdf",
+      "source_content_disposition_name": "mwiwi_0000.pdf",
+      "source_size": 93691,
+      "source_sha256": "ce1019be6e1a1862556d300e63fc0849729042c5968101cde20960a95c959da4",
+      "notion_name": "mwiwi_0000.pdf",
+      "notion_size": 93691,
+      "notion_sha256": "ce1019be6e1a1862556d300e63fc0849729042c5968101cde20960a95c959da4",
+      "notion_content_disposition_name": "mwiwi_0000.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0001.pdf",
+      "source_content_disposition_name": "mwiwi_0001.pdf",
+      "source_size": 106269,
+      "source_sha256": "eb8b9cb48f4073ec9937657b135e6f3a0583e017e7a292ff65aa6b31b8819ca1",
+      "notion_name": "mwiwi_0001.pdf",
+      "notion_size": 106269,
+      "notion_sha256": "eb8b9cb48f4073ec9937657b135e6f3a0583e017e7a292ff65aa6b31b8819ca1",
+      "notion_content_disposition_name": "mwiwi_0001.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0101.pdf",
+      "source_content_disposition_name": "mwiwi_0101.pdf",
+      "source_size": 93399,
+      "source_sha256": "045dc5f200bb304b989170f98230ffbac1adecb0c5ffac02f8fb33f4a6a17b10",
+      "notion_name": "mwiwi_0101.pdf",
+      "notion_size": 93399,
+      "notion_sha256": "045dc5f200bb304b989170f98230ffbac1adecb0c5ffac02f8fb33f4a6a17b10",
+      "notion_content_disposition_name": "mwiwi_0101.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0102.pdf",
+      "source_content_disposition_name": "mwiwi_0102.pdf",
+      "source_size": 86763,
+      "source_sha256": "298014c04a529e591d291a4e77b9b4443c90729adc859ecc82637e59129fb138",
+      "notion_name": "mwiwi_0102.pdf",
+      "notion_size": 86763,
+      "notion_sha256": "298014c04a529e591d291a4e77b9b4443c90729adc859ecc82637e59129fb138",
+      "notion_content_disposition_name": "mwiwi_0102.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0202.pdf",
+      "source_content_disposition_name": "mwiwi_0202.pdf",
+      "source_size": 93619,
+      "source_sha256": "f44b2d08a7b698067c0684c5252619287f3174fd28bf8840af1a730ad66a162d",
+      "notion_name": "mwiwi_0202.pdf",
+      "notion_size": 93619,
+      "notion_sha256": "f44b2d08a7b698067c0684c5252619287f3174fd28bf8840af1a730ad66a162d",
+      "notion_content_disposition_name": "mwiwi_0202.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0203.pdf",
+      "source_content_disposition_name": "mwiwi_0203.pdf",
+      "source_size": 116957,
+      "source_sha256": "0e1c433e1a1e651f4043588d530e8c26cfd6cd70e9305d56a48cabf6ee764564",
+      "notion_name": "mwiwi_0203.pdf",
+      "notion_size": 116957,
+      "notion_sha256": "0e1c433e1a1e651f4043588d530e8c26cfd6cd70e9305d56a48cabf6ee764564",
+      "notion_content_disposition_name": "mwiwi_0203.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0303.pdf",
+      "source_content_disposition_name": "mwiwi_0303.pdf",
+      "source_size": 133063,
+      "source_sha256": "e6cf6f436eba1f7a30b216c661fbf5513121de781fc9b312df9aaaec2565c027",
+      "notion_name": "mwiwi_0303.pdf",
+      "notion_size": 133063,
+      "notion_sha256": "e6cf6f436eba1f7a30b216c661fbf5513121de781fc9b312df9aaaec2565c027",
+      "notion_content_disposition_name": "mwiwi_0303.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0304.pdf",
+      "source_content_disposition_name": "mwiwi_0304.pdf",
+      "source_size": 79883,
+      "source_sha256": "9dfe0408aea086c469b13a5b84d11026f1c25fab19e02cfe919424f211813d88",
+      "notion_name": "mwiwi_0304.pdf",
+      "notion_size": 79883,
+      "notion_sha256": "9dfe0408aea086c469b13a5b84d11026f1c25fab19e02cfe919424f211813d88",
+      "notion_content_disposition_name": "mwiwi_0304.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0404.pdf",
+      "source_content_disposition_name": "mwiwi_0404.pdf",
+      "source_size": 94763,
+      "source_sha256": "63536982b5f70b4e3599071ec3df9e2a0971d279f0bd5954bcce87aa2913c9dd",
+      "notion_name": "mwiwi_0404.pdf",
+      "notion_size": 94763,
+      "notion_sha256": "63536982b5f70b4e3599071ec3df9e2a0971d279f0bd5954bcce87aa2913c9dd",
+      "notion_content_disposition_name": "mwiwi_0404.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0405.pdf",
+      "source_content_disposition_name": "mwiwi_0405.pdf",
+      "source_size": 128179,
+      "source_sha256": "4efa79846ed9cedbdf167ee6c90bb29a4cc5bf1cb360ebf37ce4168faa3c1351",
+      "notion_name": "mwiwi_0405.pdf",
+      "notion_size": 128179,
+      "notion_sha256": "4efa79846ed9cedbdf167ee6c90bb29a4cc5bf1cb360ebf37ce4168faa3c1351",
+      "notion_content_disposition_name": "mwiwi_0405.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0505.pdf",
+      "source_content_disposition_name": "mwiwi_0505.pdf",
+      "source_size": 122684,
+      "source_sha256": "3c9f36ad5e5722c4643ae07627a5b1d177d6c0e5dc8177174c541a65b70c98d0",
+      "notion_name": "mwiwi_0505.pdf",
+      "notion_size": 122684,
+      "notion_sha256": "3c9f36ad5e5722c4643ae07627a5b1d177d6c0e5dc8177174c541a65b70c98d0",
+      "notion_content_disposition_name": "mwiwi_0505.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0506.pdf",
+      "source_content_disposition_name": "mwiwi_0506.pdf",
+      "source_size": 93098,
+      "source_sha256": "21e13447385a3a0855da170abf5cab7c62f222916fbab78b93337d8d50dcb5ba",
+      "notion_name": "mwiwi_0506.pdf",
+      "notion_size": 93098,
+      "notion_sha256": "21e13447385a3a0855da170abf5cab7c62f222916fbab78b93337d8d50dcb5ba",
+      "notion_content_disposition_name": "mwiwi_0506.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0606.pdf",
+      "source_content_disposition_name": "mwiwi_0606.pdf",
+      "source_size": 79662,
+      "source_sha256": "8ea4adc60ee51d037402401c5203f2e5cf880bdb1b7f615be7502cde717a9850",
+      "notion_name": "mwiwi_0606.pdf",
+      "notion_size": 79662,
+      "notion_sha256": "8ea4adc60ee51d037402401c5203f2e5cf880bdb1b7f615be7502cde717a9850",
+      "notion_content_disposition_name": "mwiwi_0606.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0607.pdf",
+      "source_content_disposition_name": "mwiwi_0607.pdf",
+      "source_size": 87519,
+      "source_sha256": "b48bbabfe9f6e3845ed32a8816c8cf7d6dcd86aa8ae0c72ffe4aed6b4fa8b52c",
+      "notion_name": "mwiwi_0607.pdf",
+      "notion_size": 87519,
+      "notion_sha256": "b48bbabfe9f6e3845ed32a8816c8cf7d6dcd86aa8ae0c72ffe4aed6b4fa8b52c",
+      "notion_content_disposition_name": "mwiwi_0607.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0707.pdf",
+      "source_content_disposition_name": "mwiwi_0707.pdf",
+      "source_size": 137056,
+      "source_sha256": "92999e3ac9774faed616e8a1fe88687f22cc7af7bc230a8c6cf1c0cefbbccab3",
+      "notion_name": "mwiwi_0707.pdf",
+      "notion_size": 137056,
+      "notion_sha256": "92999e3ac9774faed616e8a1fe88687f22cc7af7bc230a8c6cf1c0cefbbccab3",
+      "notion_content_disposition_name": "mwiwi_0707.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0708.pdf",
+      "source_content_disposition_name": "mwiwi_0708.pdf",
+      "source_size": 96050,
+      "source_sha256": "2d69f0c4f8314936c30d5e04842968a44c10e5e7357b0fe055ab45faeb99af26",
+      "notion_name": "mwiwi_0708.pdf",
+      "notion_size": 96050,
+      "notion_sha256": "2d69f0c4f8314936c30d5e04842968a44c10e5e7357b0fe055ab45faeb99af26",
+      "notion_content_disposition_name": "mwiwi_0708.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0808.pdf",
+      "source_content_disposition_name": "mwiwi_0808.pdf",
+      "source_size": 88360,
+      "source_sha256": "bc0fb73266def13df38c0867d47a67595d605f44f7f731757befab2a0a8ef925",
+      "notion_name": "mwiwi_0808.pdf",
+      "notion_size": 88360,
+      "notion_sha256": "bc0fb73266def13df38c0867d47a67595d605f44f7f731757befab2a0a8ef925",
+      "notion_content_disposition_name": "mwiwi_0808.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4207572",
+      "page_id": "3f7bf244-cadc-81f2-b660-cfcc267b5da4",
+      "source_type": "folder",
+      "source_name": "mwiwi_0809.pdf",
+      "source_content_disposition_name": "mwiwi_0809.pdf",
+      "source_size": 212710,
+      "source_sha256": "be2e270b02a1c47549fd7c81cbab96dab9b856af5fdfbef2fb99c802e553a05a",
+      "notion_name": "mwiwi_0809.pdf",
+      "notion_size": 212710,
+      "notion_sha256": "be2e270b02a1c47549fd7c81cbab96dab9b856af5fdfbef2fb99c802e553a05a",
+      "notion_content_disposition_name": "mwiwi_0809.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4151315",
+      "page_id": "3f7bf244-cadc-81ea-aaf5-c0605b57319b",
+      "source_type": "folder",
+      "source_name": "00_Organisatorisches_anim.pdf",
+      "source_content_disposition_name": "00_Organisatorisches_anim.pdf",
+      "source_size": 10680644,
+      "source_sha256": "a80b448a20ae0c890efa2b959072e993fc8966aa0fbf403d062fc04fc3ce6f86",
+      "notion_name": "00_Organisatorisches_anim.pdf",
+      "notion_size": 10680644,
+      "notion_sha256": "a80b448a20ae0c890efa2b959072e993fc8966aa0fbf403d062fc04fc3ce6f86",
+      "notion_content_disposition_name": "00_Organisatorisches_anim.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4151315",
+      "page_id": "3f7bf244-cadc-81ea-aaf5-c0605b57319b",
+      "source_type": "folder",
+      "source_name": "00_Organisatorisches.pdf",
+      "source_content_disposition_name": "00_Organisatorisches.pdf",
+      "source_size": 9872329,
+      "source_sha256": "28d5a8ca29a131a394232a1e477483864e5d46c20e94b783b16347228798700e",
+      "notion_name": "00_Organisatorisches.pdf",
+      "notion_size": 9872329,
+      "notion_sha256": "28d5a8ca29a131a394232a1e477483864e5d46c20e94b783b16347228798700e",
+      "notion_content_disposition_name": "00_Organisatorisches.pdf",
+      "status": "match"
+    },
+    {
+      "type": "file_result",
+      "cmid": "4151316",
+      "page_id": "3f7bf244-cadc-8153-bb06-c3c99d976b8a",
+      "source_type": "folder",
+      "source_name": "01_Einleitung_anim.pdf",
+      "source_content_disposition_name": "01_Einleitung_anim.pdf",
+      "source_size": 19219777,
+      "source_sha256": "c624097f7ed21310d7c61ca7714e07532bbff8f3f62de1ba8414013456fe6c33",
+      "notion_name": "01_Einleitung_anim.pdf",
+      "notion_size": 19219777,
+      "notion_sha256": "c624097f7ed21310d7c61ca7714e07532bbff8f3f62de1ba8414013456fe6c33",
+      "notion_content_disposition_name": "01_Einleitung_anim.pdf",
+      "status": "match"
+    }
+  ],
+  "semester_final_targeted_retry": {
+    "cmid": "4151316",
+    "name": "01_Einleitung.pdf",
+    "source": {
+      "sha256": "a90cea895ccff04d3a6b67707423570dd6138abde946f050ac6dd367aaf03be6",
+      "bytes": 18820312,
+      "attempts": 1
+    },
+    "notion": {
+      "sha256": "a90cea895ccff04d3a6b67707423570dd6138abde946f050ac6dd367aaf03be6",
+      "bytes": 18820312,
+      "attempts": 1
+    },
+    "match": true
+  },
+  "existing_course_verification": [
+    {
+      "cmid": "4145651",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "38fbf244-cadc-81f4-8e92-c8ac30700e7f",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "a868fb1c4258593f791ac5f3996f10a58185af529a6a20257c827133dd9c7976",
+          "size": 68304,
+          "matches": 1,
+          "notion_name": "ausschreibung_shk_forschung.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4145653",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "38fbf244-cadc-817c-86d8-e373224295d9",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "b197ba00828444018662aed4d3dda27588da30183b9ca8036e05bf95bbc77377",
+          "size": 596952,
+          "matches": 1,
+          "notion_name": "2026-Slides_SHK.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4160356",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "39dbf244-cadc-8101-b271-cb2ff1623401",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "455cda184924b416e9d4e8b7371a69298bba6e6f31191e52760738c5ca816a21",
+          "size": 1254912,
+          "matches": 1,
+          "notion_name": "2026-Slides_SHK_DFG_Projekt.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4065304",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "345bf244-cadc-81a2-b1eb-c222ebb2ee97",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "a91df7d8f37011c07c3ed3f4b00e4aa5d6275d65a83c03aa0b0d2a356232b05a",
+          "size": 7543462,
+          "matches": 1,
+          "notion_name": "01_2026_OR_Folien_Einleitung.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4129565",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "37cbf244-cadc-8168-9a6e-db086eb1c35f",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "6c5c5937e914a4380cc975daddb4236cf4a1980f1e4bbd699c45f42a6f11b856",
+          "size": 146872,
+          "matches": 1,
+          "notion_name": "2026_OR_Plan_update.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4073483",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "345bf244-cadc-81cc-bf5e-ec128868bdf8",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "78723edc97730f4870b520cdc622499e7e15c4156decc788ac425d146aabedc2",
+          "size": 244428,
+          "matches": 1,
+          "notion_name": "04_2026_OR_Folien_Komplexitaet_handout.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4086458",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "34bbf244-cadc-8176-961d-cc488d63b59d",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "23c7babf6615d9cf54c56dbf8556f35118269c155284938a732e511ca43f4cfc",
+          "size": 884528,
+          "matches": 1,
+          "notion_name": "04_2026_OR_Folien_Scheduling.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4086470",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "34bbf244-cadc-815c-87d6-c78efe5ddf10",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "e364b40e4c78f571d3437098c38e54dd0b1a51843ce7ddef1bc752afcddbb9f7",
+          "size": 960635,
+          "matches": 1,
+          "notion_name": "04_1_2026_OR_Mitschrift.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4065307",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "345bf244-cadc-8113-8eb0-ce75e736fbf8",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "a0b23b02c3181d933070065f4b7315bb2aa5db52aed2fa0f4e605a565866d40a",
+          "size": 579491,
+          "matches": 1,
+          "notion_name": "02_2026_OR_Folien_Optimierung.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4092433",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "350bf244-cadc-81be-bef6-ebe3cd281de9",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "5e4bb12342e10e671b27f2b982b36130d1c28b29c492de82d8678c6005c7b835",
+          "size": 279281,
+          "matches": 1,
+          "notion_name": "04_2_2026_OR_Mitschrift.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4094387",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "351bf244-cadc-8178-bfcc-d2356f8194cc",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "612ebf9111e72698bc7028ba4c268661dd0cf6674c7d0f96b4f8d93cac78c880",
+          "size": 840637,
+          "matches": 1,
+          "notion_name": "05_2026_OR_Folien_Graphen.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4134842",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "382bf244-cadc-81e3-ad9c-d6c19e180884",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "94c09c67d3ebab72bf640a94f1cb77d381c30da236ba586ea2482937b43b3398",
+          "size": 529063,
+          "matches": 1,
+          "notion_name": "06_2026_OR_Folien_LinOpt.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4158103",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "39abf244-cadc-8147-8963-e7bf70c762fc",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "ced7769b056e6a5d2809b07e5d5cf38a3127e5db7ef773f70e21a767d4a9699c",
+          "size": 515669,
+          "matches": 1,
+          "notion_name": "07_2026_OR_Folien_nonLinOpt_Teil_1.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4136333",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "383bf244-cadc-8104-8655-ddd1b7f62b3a",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "c8d59005e098bce99068fb1c9e737ca242d434ad3c0e3c4407afb193cf303e77",
+          "size": 547597,
+          "matches": 1,
+          "notion_name": "06_2026_OR_Folien_(LinOpt)_Teil_1.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4154034",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "397bf244-cadc-81b6-8484-f37d10738bc2",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "e07a418467c3531c927428ed396822db415033a7fded61795f97743dcd2f53d9",
+          "size": 567803,
+          "matches": 1,
+          "notion_name": "07_2026_OR_Folien_nonLinOpt.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4163253",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "39fbf244-cadc-818e-b7c0-e3abc09786fc",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "5f6059664841ee7320f0c56a4d3fa493a9bb7b0fc9ebf4664eb0ea8af160daa0",
+          "size": 292365,
+          "matches": 1,
+          "notion_name": "07_2026_OR_Folien_nonLinOpt_Teil_2.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4167573",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "3a7bf244-cadc-8145-92a5-ce35f3bc3cdd",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "8d92e0eabf40274cf7727656041ae9623a911ce83e24a01f6f937d0d8c8090b0",
+          "size": 6051576,
+          "matches": 1,
+          "notion_name": "08_2026_OR_Folien_Extra_mcMST.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4164186",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "3a0bf244-cadc-81bf-9167-f6a6ff7c07a2",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "2e30ab15a5541bb979e81712da33f4f54243a22a8c81a855aaa725ed9f2650a3",
+          "size": 207826,
+          "matches": 1,
+          "notion_name": "OR_berblick.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4167577",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "3a7bf244-cadc-8121-aa53-c38b90e5e558",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "059bcd0540684de00597ff94bbdad50c3c1cd5524f90a3384a92028b3d154755",
+          "size": 7607156,
+          "matches": 1,
+          "notion_name": "08_2026_OR_Folien_Extra_mcMST.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4164189",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "3f7bf244-cadc-81ec-bff1-e0775b996f70",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "8d38540a3f0a42109e1788e5cd22a081b2ab87710abc8c46092527591ee37a78",
+          "size": 18077,
+          "matches": 1,
+          "notion_name": "es_dashboard.html"
+        }
+      ]
+    },
+    {
+      "cmid": "4065017",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "345bf244-cadc-8124-abd4-c3ed06247d03",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "1a48497f78e6c172e38c681be57f5c34ff2444c1b477953ac8085f634802957c",
+          "size": 542051,
+          "matches": 1,
+          "notion_name": "Skript_Scheduling.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4095676",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "352bf244-cadc-8167-8ddd-e5dd10d03106",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "811536070026a892770dab2f2ddc0997409f2424c94b5b47697373e33e3e14fa",
+          "size": 61424,
+          "matches": 1,
+          "notion_name": "Bewertung_Begleitprojekt.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4131167",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "37ebf244-cadc-8151-b3b6-f4185a9d35cc",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "1512b01d0b9ed2a886985211a85918c83f3d8c1047f94dd749342d3692854c38",
+          "size": 62042,
+          "matches": 1,
+          "notion_name": "Bewertung_Begleitprojekt_2.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4150628",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "393bf244-cadc-8166-ac40-eb86e2d663cb",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "d5dff305d48a758519fad46001a4b6229d7d0ec4a79281d5c69551dec1230e22",
+          "size": 62485,
+          "matches": 1,
+          "notion_name": "Bewertung_Begleitprojekt_3.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4064588",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "345bf244-cadc-8176-bf49-fdcc03997b9c",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "45924cc1aa362d38596414bef054e18fe412c651a95dd10cb69d54b10bdd2ff7",
+          "size": 63066,
+          "matches": 1,
+          "notion_name": "generelles.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4155294",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "39abf244-cadc-81b6-a6b4-e1d80955903b",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "5570edbd075a7488106363a514f16e6da3c841a4adfe2596224ee52ff2fe3354",
+          "size": 63505,
+          "matches": 1,
+          "notion_name": "Bewertung_Begleitprojekt_4.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4163241",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "3a0bf244-cadc-816e-8377-dacee396fae7",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "7f6136458125063778973ab938bf4ae6830dd7b9ef8c7d41f1fcb3e7e5fd362f",
+          "size": 63614,
+          "matches": 1,
+          "notion_name": "Bewertung_Begleitprojekt_final.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4064582",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "345bf244-cadc-81f8-bd11-fa2386eb65cc",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 2,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "56493f9aff4e8e1e40beae8f18daaa50eb8ae454ec45325226065e1ef49612c5",
+          "size": 1183963,
+          "matches": 1,
+          "notion_name": "01_level1.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4094237",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "352bf244-cadc-81fd-bcaa-e1704c83ba46",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "f965a124f269d7594f2241fc4a538f6aa5838ab07a0d19245ffc5448f8545d8b",
+          "size": 827152,
+          "matches": 1,
+          "notion_name": "2026_OR_level3.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4086193",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "34bbf244-cadc-81ae-9bff-d63e4c76ad9d",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "b33ba3a45bbfd758c8df623b31295dd6ce0d817ce1aa29f1fae484e884eb2da7",
+          "size": 41523,
+          "matches": 1,
+          "notion_name": "02_level2.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4095464",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "352bf244-cadc-813b-9f92-ce4148243fd2",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 0,
+      "files": [
+        {
+          "name": "Wilantis_Netz.ipynb",
+          "status": "provider_blocked"
+        }
+      ]
+    },
+    {
+      "cmid": "4123938",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "375bf244-cadc-8133-aff6-cdfb8e6d372a",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "9f95055b93dfb4e52bffc890fc643191c3517c8ae827e4d8048aa8b8c73f26ef",
+          "size": 291133,
+          "matches": 1,
+          "notion_name": "05_level5.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4130711",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "37dbf244-cadc-816f-9858-f690411b9d31",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "ed16e0297ac9b7b9fa998756125ed32ba5cce2f276aeb162a741089d01ceb98e",
+          "size": 95246,
+          "matches": 1,
+          "notion_name": "06_level6.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4101673",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 2,
+      "page_id": "361bf244-cadc-81fc-b068-f8d0bd49721d",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "db9940bdfa0a0e0196823dcb24aeb181902747ab7b60b17e1c3581fbbc75fe0c",
+          "size": 886448,
+          "matches": 1,
+          "notion_name": "04_level4.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4132772",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "38abf244-cadc-8191-9b27-c9c9ffa8f8d5",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "38d0ac8ee34dead93e00873fca95cadd8c0eacff17a5cff8cfdaea24bf6a36c1",
+          "size": 139172,
+          "matches": 1,
+          "notion_name": "07_level7.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4132778",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "392bf244-cadc-816a-828f-d8366d8b7318",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "e8eb4c208ed521a9c8b99cde769aa7e057d087b419eafc597530fe0cd2240f74",
+          "size": 154213,
+          "matches": 1,
+          "notion_name": "08_level8.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4065011",
+      "course_id": "93329",
+      "type": "url",
+      "existing_source_rows": 2,
+      "page_id": "349bf244-cadc-8121-b940-cb0eb65167df",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "delivery": "legacy_bookmark",
+      "status": "match",
+      "target": "https://www.dataquest.io/blog/jupyter-notebook-tutorial/",
+      "source": "https://www.dataquest.io/blog/jupyter-notebook-tutorial/"
+    },
+    {
+      "cmid": "4064902",
+      "course_id": "93329",
+      "type": "url",
+      "existing_source_rows": 2,
+      "page_id": "349bf244-cadc-8100-82eb-dcdcc6f3e5de",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "delivery": "legacy_bookmark",
+      "status": "match",
+      "target": "https://de.linkedin.com/learning/python-lernen",
+      "source": "https://de.linkedin.com/learning/python-lernen"
+    },
+    {
+      "cmid": "4155149",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "398bf244-cadc-8106-9721-d606172c5f0b",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "3232342cf939a93f8cba7432f725d6b96534d9b14bfa2c9f6a7793ed1e52c96e",
+          "size": 134611,
+          "matches": 1,
+          "notion_name": "09_level9.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4064947",
+      "course_id": "93329",
+      "type": "url",
+      "existing_source_rows": 2,
+      "page_id": "349bf244-cadc-8129-a129-f4c8eff49915",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "delivery": "legacy_bookmark",
+      "status": "match",
+      "target": "https://leetcode.com/problemset/",
+      "source": "https://leetcode.com/problemset/"
+    },
+    {
+      "cmid": "4117093",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "368bf244-cadc-8185-8a74-c6412578bff1",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "6de0d113ca2727f13e9d6d027f9f92f040c43e5245d5fe47b4e395fe19f61a3d",
+          "size": 303142,
+          "matches": 1,
+          "notion_name": "Python_Aufgabensammlung.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4117080",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "368bf244-cadc-8183-8e57-d2830dd2be19",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "8ff1b3d254774b5fbcf6138648af87b3a4982c2983f25daec5fdd7994e191022",
+          "size": 2727091,
+          "matches": 1,
+          "notion_name": "OR_Aufgabensammlung_mit_LÃ¶sungen_260707.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4117079",
+      "course_id": "93329",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "369bf244-cadc-818e-a3cf-f4291ecb323e",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "dd3dcad9fdb4c04b3e1c7a067de1ead0c0c043a52b46870d4d3817021120007f",
+          "size": 830765,
+          "matches": 1,
+          "notion_name": "OR_Aufgabensammlung_260707.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4117100",
+      "course_id": "93329",
+      "type": "folder",
+      "existing_source_rows": 1,
+      "page_id": "3f7bf244-cadc-8130-a655-ea44e4321b30",
+      "relations": [
+        "342bf244-cadc-81fe-87eb-d7b3097b1113"
+      ],
+      "status": "checked",
+      "expected_files": 18,
+      "target_files": 1,
+      "files": [
+        {
+          "name": "01_rucksack_solution.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "01_rucksack_template.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "02_schedule_solution.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "02_schedule_template.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "03_graphen_solution.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "03_graphen_template.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "04_kruskal_solution.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "04_kruskal_template.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "05_dfs_solution.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "05_dfs_template.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "06_Hierholzer_solution.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "06_Hierholzer_template.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "07_fibunacci_1d_solution.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "07_fibunacci_1d_template.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "08_coordinate_search2d_solution.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "08_coordinate_search2d_template.ipynb",
+          "status": "provider_blocked"
+        },
+        {
+          "name": "blackbox.py",
+          "status": "match",
+          "sha256": "3e90d70d28c01c4f95ca91a0e8702a52d42a7ee6ed78d23d88e6c94927109647",
+          "size": 545,
+          "matches": 1,
+          "notion_name": "blackbox.py"
+        },
+        {
+          "name": "dorf_adjazenz.pkl",
+          "status": "provider_blocked"
+        }
+      ]
+    },
+    {
+      "cmid": "4126955",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "37abf244-cadc-813d-b492-f4f40c90e014",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "b55392e37e2a442938da6e9b5714dc681abd937eb6aaec61690d3e73dfec784a",
+          "size": 80637,
+          "matches": 1,
+          "notion_name": "Case_Study_2026.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4059789",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "365bf244-cadc-817c-a97a-dcde901d5798",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "9141e8fda3b3b6e6efdf6e95c06aa80f1c9a64a6c6351f97ef5248a0d08f96fc",
+          "size": 3497590,
+          "matches": 1,
+          "notion_name": "Lecture_Introduction_and_Movtivation.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4092230",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "350bf244-cadc-81f9-a6ba-e155dfdb2999",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "3730398f825daef36eba9258c6d1ed10c9e0dbf65040bf94ee474094d257c086",
+          "size": 3455324,
+          "matches": 1,
+          "notion_name": "bootcamp-1.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4065959",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "344bf244-cadc-8133-bb62-d3a203ce6572",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "e8a7d0105ba20f32bee8ccf31c8a404ed60a674e29be482d62316f42f512f881",
+          "size": 1929048,
+          "matches": 1,
+          "notion_name": "VL02_ERM_1.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4069428",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "365bf244-cadc-81b6-ba0d-efbb8cfc1ab0",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "54650b0bf22f6ec0c60ba159a50d7f076e5318cfaadabc2babc61264aff15ffe",
+          "size": 258908,
+          "matches": 1,
+          "notion_name": "DaMa_Exercise_1.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4079040",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "365bf244-cadc-810e-84f3-dfed6f3e8724",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "6264d7c3eda2882601af18ecaee793043acbe86694f64dbab4e457b136c923b2",
+          "size": 2307901,
+          "matches": 1,
+          "notion_name": "VL03_ERM_2.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4095535",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "352bf244-cadc-81e2-a26d-e28ba62a2eb4",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "32bc1ec38a3f48595d55330131c2eca9df352e2d5e829da02e7c248712df3ebe",
+          "size": 16685898,
+          "matches": 1,
+          "notion_name": "Exercise 1 ER Session.pptx"
+        }
+      ]
+    },
+    {
+      "cmid": "4121396",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "373bf244-cadc-8125-9718-e9e91bfb23d9",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "3d03614bb50cadd7b429c66f0aaabc76aa1782eaaa58c80c2bc1565168e53e54",
+          "size": 1157624,
+          "matches": 1,
+          "notion_name": "Exercise_2_-_Solution.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4099117",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "357bf244-cadc-8117-81d9-dc8b5368367e",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "0057872806927e452529aeec37cdeb1b777bd2fcfc5d7538d27a279e9dc7da9d",
+          "size": 359503,
+          "matches": 1,
+          "notion_name": "Exercise_2.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4099678",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "357bf244-cadc-8197-8be3-fbcd0fa0d7a1",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "718f147c76dc27f79f4f2ad8e82ca1b32d0742aaec6c570e4117ac5a08387c82",
+          "size": 6749648,
+          "matches": 1,
+          "notion_name": "VL06_Normalization.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4095453",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "352bf244-cadc-8158-a015-ea455b01fffd",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "c4a938a28e4e9cb0cc6828267acc0910b0b8766d3f2c8d4acc14c752abc24fa9",
+          "size": 2499376,
+          "matches": 1,
+          "notion_name": "VL04_Transformation.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4124607",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "375bf244-cadc-81e4-bf53-f9e34c0ae626",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "7f30bebe9bdbd5899314d0da9b52794a1c188a6cbccc643fe5d4bbc08880cb50",
+          "size": 1824274,
+          "matches": 1,
+          "notion_name": "bootcmap-2.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4109972",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "360bf244-cadc-81bd-8039-c75960abb8e0",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "e3a9b19a46c6600785752ee2b27d74dbd108bf412b86a67306f12e93b1c784fb",
+          "size": 4123016,
+          "matches": 1,
+          "notion_name": "VL07_SQL_Basics_Types_DDL_DML.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4120322",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "36fbf244-cadc-8110-8561-eaf48dc8467f",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "5ea1795614bea4ef53341253d69873ce6e5ddeebbd7b578ebe3b03980775784e",
+          "size": 850117,
+          "matches": 1,
+          "notion_name": "Installation_Guide_PostgreSQL_and_DataGrip.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4120323",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "36fbf244-cadc-81a7-add5-fc5789c0a531",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "2e11f4830cad132a88c1f0ad1f1efd7ba484069bbccc8d96af95c0b197efede4",
+          "size": 657014,
+          "matches": 1,
+          "notion_name": "Exercise_SQL.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4154630",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "398bf244-cadc-81cc-990b-d4d2a94debf3",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "d4e3d71aadb2b5353452f0164cd7009e3dcc2b7870b3612f478581b8a364b5cb",
+          "size": 1396227,
+          "matches": 1,
+          "notion_name": "Exercise_Session_SQL.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4126406",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "37abf244-cadc-81fa-8430-dade2b7c7984",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "eed2aa5a607afa07b134e42fd4a79d9b738c8e09fabc28a8b1b7b01bbc5f411f",
+          "size": 2745139,
+          "matches": 1,
+          "notion_name": "VL09_SQL_Advanced.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4128989",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "37cbf244-cadc-8156-85f2-ea53fdcf9eb0",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "4c64229683275327c531af789acd318f6fcba7260c2d077567710eb3c1d9fbab",
+          "size": 2612330,
+          "matches": 1,
+          "notion_name": "VL10_SQL_Programming.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4126369",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "37abf244-cadc-819e-862b-d38bb029c37c",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "347901f4b628b779e60e09f05442e61f8a19e1fd68ad41cb4e0550df7ddd271e",
+          "size": 8570597,
+          "matches": 1,
+          "notion_name": "06-2026_-_Vector_Databases.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4124416",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "375bf244-cadc-81e7-93fb-ef0a360b5f85",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "efa3b6c1929c838e7dd5f539d268af9f4396be07b254ec7b1bf3aaa3da6e382a",
+          "size": 1259709,
+          "matches": 1,
+          "notion_name": "260518_DQM_zeb_Uni_Munster.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4122005",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "373bf244-cadc-81b2-a2e5-e021f52f09df",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "0f46f2f4e402efd7b37c7282ae557c8a65cc3c24ae1dfae78ac59369cba49b2d",
+          "size": 3523391,
+          "matches": 1,
+          "notion_name": "VL08_SQL_DQL.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4142233",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "38abf244-cadc-814e-b61c-de6bffa7ed5f",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "eb71dd9e8d609ebe9a0cb37819c72796302c4b964d0a9271ba0e946960e81d32",
+          "size": 2831999,
+          "matches": 1,
+          "notion_name": "Lecture_Transactionmanagement.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4139449",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "388bf244-cadc-81e3-91aa-d27c188a8ca7",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "0572c79d40d9a20845023ee1eb467b0e57efe15f8ed562101614654e41a9ac7a",
+          "size": 4329031,
+          "matches": 1,
+          "notion_name": "Data_Management_Transdev.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4154624",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "398bf244-cadc-81ea-bada-dba531514736",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "75934603a7b108ad1b7fd28edb90cfb1149b3651fb1461435e9cb0b35d8e3b4f",
+          "size": 1456838,
+          "matches": 1,
+          "notion_name": "Exercise_Session_Transactionmanagement.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4142231",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "38abf244-cadc-81d8-9089-f74dc11284a5",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "a7a72302ff389d0150facbd5df5d4e4a65de5b8cacf376bae1b7e76992e95a2f",
+          "size": 203977,
+          "matches": 1,
+          "notion_name": "Exercise_Transactionmanagement.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4148918",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "391bf244-cadc-814d-902a-da7cfd380d56",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "a93505c3f82f2fccf8b430b4d8bab45a41d5572874ab050b52cb911c46a8fc38",
+          "size": 1512862,
+          "matches": 1,
+          "notion_name": "VL12_NoSQL.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4152605",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "396bf244-cadc-81f1-9bab-f227860a4c7f",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "85d640ed11a3b1abd4097907149bf905617fc209e2d0af228575c0e002e15972",
+          "size": 3464166,
+          "matches": 1,
+          "notion_name": "Data_Warehousing.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4166102",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "3a4bf244-cadc-81b8-8306-e232d8b7304e",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "24ea057bbcddd0bc9b92b578bb245fe0583e1adfd1452174b9b5b2a02ea103cf",
+          "size": 19618338,
+          "matches": 1,
+          "notion_name": "2026_07_20_DBtune_presentation_Munster_University.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4154337",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "397bf244-cadc-8164-9b2e-f990748e209c",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "2bf7506db79a8d67da8304764d7418e454242afd1cd67158e86613c0037ad5fd",
+          "size": 179662,
+          "matches": 1,
+          "notion_name": "Training_ERM_2026.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4160274",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "39dbf244-cadc-8163-84a2-cf37b074eea0",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "6ae38973ea8bc088f3c7bad011eceaa05789a799512f3210b9ba369c44396750",
+          "size": 859414,
+          "matches": 1,
+          "notion_name": "Training_ERM_Session_2026.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4155151",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "398bf244-cadc-817e-b412-c5ad4cecf84c",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "3a5a701b619c0ec4f74310e5614748e48ca3c908acff4ffb6168eb57cca42d16",
+          "size": 2508919,
+          "matches": 1,
+          "notion_name": "Bootcamp_3.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4161858",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "39ebf244-cadc-8105-bff8-c20b091bd7a3",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "8ee82cd7eaa46d16b5150bd7a9e90c7bb33c99db78318a7726c861e3ec9da6f6",
+          "size": 807023,
+          "matches": 1,
+          "notion_name": "Training_Data_Processing.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4173460",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "3aebf244-cadc-8134-a453-d3c2d48efcb1",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "414fdc0dcf70786ecd9bf18ce53975c20bbd9e1846ba01b1904994212d3f85c8",
+          "size": 969495,
+          "matches": 1,
+          "notion_name": "Training_SQL_2026.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4025754",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "344bf244-cadc-8124-9048-d5b8de6dcadf",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "2846f9efe3220c905f8cd32f8e04ab3dcc40b43a12e10fe06c80ee41e813052c",
+          "size": 4087230,
+          "matches": 1,
+          "notion_name": "Skript_SS_23.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4165045",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "3a4bf244-cadc-8179-8b9b-ce8a62ce9ee7",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "500128a008dfac4d05812d565b3c99c0fec79e9910d6a5f1d0ad7e893d31ab7c",
+          "size": 310075,
+          "matches": 1,
+          "notion_name": "SQL_training.pdf"
+        }
+      ]
+    },
+    {
+      "cmid": "4162920",
+      "course_id": "91937",
+      "type": "resource",
+      "existing_source_rows": 1,
+      "page_id": "39fbf244-cadc-81ad-afc3-fd91d065c990",
+      "relations": [
+        "322bf244-cadc-8145-93a1-c02bfb7869c8"
+      ],
+      "status": "checked",
+      "expected_files": 1,
+      "target_files": 1,
+      "files": [
+        {
+          "name": null,
+          "status": "match",
+          "sha256": "0c7a96525e3b971b9671767d52ccacd9de7a39000b94579cb40f17efb18ab50a",
+          "size": 2674063,
+          "matches": 1,
+          "notion_name": "Training_Data_Processing.pdf"
+        }
+      ]
+    }
+  ],
+  "multipart": {
+    "exit": 0,
+    "results": [
+      {
+        "source_cmid": "4094423",
+        "name": "3 - Forschungsgebiete und Forschungsfragen.pdf",
+        "bytes": 52499379,
+        "source_sha256": "d6f2dbd0768c8b51d66e518c50129311d0321028380087f8f1a7216188b7a372",
+        "test_page_id": "3f7bf244-cadc-8110-bfee-ec5b177644ce",
+        "notion_sha256": "d6f2dbd0768c8b51d66e518c50129311d0321028380087f8f1a7216188b7a372",
+        "notion_bytes": 52499379,
+        "status": "match",
+        "test_page_archived": true
+      },
+      {
+        "source_cmid": "4101264",
+        "name": "4 - Themenfindung und Projektmanagement.pdf",
+        "bytes": 64354556,
+        "source_sha256": "851eb15751c73a7db226f0ca4f30912e5decc8553c87d1bff2e60941176cdc9f",
+        "test_page_id": "3f7bf244-cadc-81f4-a368-c5566481f164",
+        "notion_sha256": "851eb15751c73a7db226f0ca4f30912e5decc8553c87d1bff2e60941176cdc9f",
+        "notion_bytes": 64354556,
+        "status": "match",
+        "test_page_archived": true
+      },
+      {
+        "source_cmid": "4122945",
+        "name": "Ethikdebatte.mov",
+        "bytes": 259168242,
+        "source_sha256": "3cf4070d8502c386aef475942dd78d60e55d0001f5b58a088fcf3b6471defb99",
+        "test_page_id": "3f7bf244-cadc-8142-b84b-dd9279c269fc",
+        "notion_sha256": "3cf4070d8502c386aef475942dd78d60e55d0001f5b58a088fcf3b6471defb99",
+        "notion_bytes": 259168242,
+        "status": "match",
+        "test_page_archived": true
+      }
+    ]
+  },
+  "existing_file_patch": [
+    {
+      "test_page_id": "3f7bf244-cadc-81e5-8d9a-cf1167c1dfbb",
+      "status": "match",
+      "files": [
+        {
+          "name": "muenster_invest_Recruiting_onepager.pdf",
+          "bytes": 73348,
+          "source_sha256": "ee0cfe9c12f898eced0e05ca3e7db9802a89f3bb3165dcdaf07f50a9a9712f25",
+          "notion_sha256": "ee0cfe9c12f898eced0e05ca3e7db9802a89f3bb3165dcdaf07f50a9a9712f25"
+        },
+        {
+          "name": "Talking_Economics_Kurzvorstellung.pdf",
+          "bytes": 327262,
+          "source_sha256": "a6adfd155092a6e9afb7b86af25664193233d4013f12008b80828fe2eb001cb7",
+          "notion_sha256": "a6adfd155092a6e9afb7b86af25664193233d4013f12008b80828fe2eb001cb7"
+        }
+      ],
+      "test_page_archived": true
+    }
+  ],
+  "transcription": {
+    "key": "4151310-69dac2955241",
+    "cmid": "4151310",
+    "status": "done",
+    "duration_seconds": 382.966667,
+    "content_page_id": "3f7bf244-cadc-8199-bbb4-e35697603a4e",
+    "meeting_page_id": "3f7bf244-cadc-8143-8d12-f92462eecdf1",
+    "body_sha256": "d53c5a528cbb7a9a05489a814c8add73b7e794e3dbbf47e47c07f267edca7386",
+    "total_block_count": 12,
+    "appended_block_count": 12,
+    "saved_blocks": 12
+  },
+  "manifest_repair": {
+    "exit": 0,
+    "records": [
+      {
+        "check_cmid": "4059789",
+        "source_matches": true,
+        "old_manifest_matches": true
+      },
+      {
+        "check_cmid": "4065959",
+        "source_matches": true,
+        "old_manifest_matches": true
+      },
+      {
+        "check_cmid": "4069428",
+        "source_matches": true,
+        "old_manifest_matches": true
+      },
+      {
+        "check_cmid": "4079040",
+        "source_matches": true,
+        "old_manifest_matches": false
+      },
+      {
+        "check_cmid": "4025754",
+        "source_matches": true,
+        "old_manifest_matches": true
+      },
+      {
+        "patched": 5,
+        "backup": "/data/learnweb-backups/20261012-before-page-id-reconcile.db",
+        "quick_check": "ok",
+        "proof": [
+          {
+            "cmid": "4059789",
+            "previous_id": "345bf244-cadc-81cf-9536-e02d7d4b7904",
+            "verified_id": "365bf244-cadc-817c-a97a-dcde901d5798",
+            "matches_source": true,
+            "matches_old_manifest": true
+          },
+          {
+            "cmid": "4065959",
+            "previous_id": "345bf244-cadc-81b7-8c82-e7a3c1bbc559",
+            "verified_id": "344bf244-cadc-8133-bb62-d3a203ce6572",
+            "matches_source": true,
+            "matches_old_manifest": true
+          },
+          {
+            "cmid": "4069428",
+            "previous_id": "345bf244-cadc-81a0-b487-e2ea6d1597fd",
+            "verified_id": "365bf244-cadc-81b6-ba0d-efbb8cfc1ab0",
+            "matches_source": true,
+            "matches_old_manifest": true
+          },
+          {
+            "cmid": "4079040",
+            "previous_id": "348bf244-cadc-8110-ab93-ed4458081e87",
+            "verified_id": "365bf244-cadc-810e-84f3-dfed6f3e8724",
+            "matches_source": true,
+            "matches_old_manifest": false
+          },
+          {
+            "cmid": "4025754",
+            "previous_id": "345bf244-cadc-814a-8b06-c2159e2ac438",
+            "verified_id": "344bf244-cadc-8124-9048-d5b8de6dcadf",
+            "matches_source": true,
+            "matches_old_manifest": true
+          }
+        ]
+      }
+    ]
+  },
+  "scheduler": {
+    "consecutive_failures": 0,
+    "content_verified": false,
+    "cron_schedule": "49 16 12 10 *",
+    "health_scope": "configuration_and_local_storage",
+    "issues": [],
+    "last_run": {
+      "error_count": 2,
+      "error_count_source": "push_summary",
+      "error_kind": "content_blocked",
+      "exit_code": 2,
+      "finished_at": "2026-10-12T16:58:40.082888+00:00",
+      "outcome": "incomplete",
+      "started_at": "2026-10-12T16:49:00.001378+00:00",
+      "trigger": "scheduler"
+    },
+    "ready": true,
+    "scheduler_running": true,
+    "status": "ready",
+    "sync_running": false,
+    "timezone": "UTC",
+    "tested_code_commit": "7d1db2fb4136e40bf1952700718fb30136c4cc22"
+  },
+  "course_map": {
+    "code_sha": "7d1db2fb4136e40bf1952700718fb30136c4cc22",
+    "course_map": {
+      "OR-2026_1": "OR",
+      "DaMa-2026_1": "WI2",
+      "AFWFW-2026_2": "QM1",
+      "LAFW-2026_2": "QM1",
+      "Informatik_I-2026_2": "Inf1",
+      "Java-2026_2": "Inf1"
+    },
+    "sources": [
+      "Notion module320bf244-cadc-8134-8659-fdc7b747582d: Analysis and Linear Algebra belong to QM1",
+      "Notion module320bf244-cadc-803b-b93a-c2e5231c6312: Programming and Java belong to Inf1",
+      "Notion module320bf244-cadc-818b-93a1-dfc590a9dfde: Data Management is WI2",
+      "Existing content select OR retained for Operations Research"
+    ]
+  },
+  "regular_schedule": {
+    "runtime_commit": "ae1b0a050c0a7796abc338ac5e2c48f351181b3a",
+    "health": {
+      "consecutive_failures": 0,
+      "content_verified": false,
+      "cron_schedule": "0 6 * * mon-fri",
+      "health_scope": "configuration_and_local_storage",
+      "issues": [],
+      "last_run": {
+        "error_count": 2,
+        "error_count_source": "push_summary",
+        "error_kind": "content_blocked",
+        "exit_code": 2,
+        "finished_at": "2026-10-12T17:42:26.554147+00:00",
+        "outcome": "incomplete",
+        "started_at": "2026-10-12T17:32:55.445824+00:00",
+        "trigger": "webhook"
+      },
+      "ready": true,
+      "scheduler_running": true,
+      "status": "ready",
+      "sync_running": false,
+      "timezone": "UTC"
+    },
+    "active_errors": [
+      {
+        "cmid": "4095464",
+        "status": "error",
+        "retryable": 0,
+        "failure_reason": "upload_blocked"
+      },
+      {
+        "cmid": "4117100",
+        "status": "error",
+        "retryable": 0,
+        "failure_reason": "folder_files_blocked"
+      }
+    ],
+    "next_scheduled_utc": "2026-10-13T06:00:00+00:00",
+    "next_time_method": "APScheduler evaluated against live configuration",
+    "checked_at": "2026-10-12T18:02:53.141938+00:00"
+  },
+  "automatically_discovered_new_activity": {
+    "cmid": "4261934",
+    "name": "KUKUwaya_Vorstellung-1.pdf",
+    "source": {
+      "sha256": "b9367e3401a73a11ad0f88139347b635b8ee5f651c60274abbf50d563ad3030b",
+      "bytes": 692493,
+      "attempts": 1
+    },
+    "notion": {
+      "sha256": "b9367e3401a73a11ad0f88139347b635b8ee5f651c60274abbf50d563ad3030b",
+      "bytes": 692493,
+      "attempts": 1
+    },
+    "match": true
+  },
+  "folder_final_live": [
+    {
+      "cmid": "4151315",
+      "status": "skipped",
+      "same_page": true,
+      "same_files": true,
+      "files": 2
+    },
+    {
+      "cmid": "4151316",
+      "status": "skipped",
+      "same_page": true,
+      "same_files": true,
+      "files": 2
+    },
+    {
+      "cmid": "4207572",
+      "status": "skipped",
+      "same_page": true,
+      "same_files": true,
+      "files": 19
+    }
+  ],
+  "final_inventory": {
+    "passed": true,
+    "all_rows": 136,
+    "new_duplicates": 0,
+    "preserved_duplicate_sources": 13,
+    "semester_contents": 42,
+    "semester_originals": 30,
+    "additional_transcripts": 1,
+    "source_count": 123
+  },
+  "full_control_run": {
+    "consecutive_failures": 0,
+    "content_verified": false,
+    "cron_schedule": "0 6 * * mon-fri",
+    "health_scope": "configuration_and_local_storage",
+    "issues": [],
+    "last_run": {
+      "error_count": 2,
+      "error_count_source": "push_summary",
+      "error_kind": "content_blocked",
+      "exit_code": 2,
+      "finished_at": "2026-10-12T17:42:26.554147+00:00",
+      "outcome": "incomplete",
+      "started_at": "2026-10-12T17:32:55.445824+00:00",
+      "trigger": "webhook"
+    },
+    "ready": true,
+    "scheduler_running": true,
+    "status": "ready",
+    "sync_running": false,
+    "timezone": "UTC",
+    "tested_code_commit": "8a9cecccef84a41dec891393650f7417d45c9e28"
+  },
+  "result": "operational_with_18_explicit_original_format_blockers",
+  "course_selection": [
+    {
+      "id": "3f7bf244-cadc-81f2-a42c-cf74ed5ccbfc",
+      "course_id": "96296",
+      "active": true,
+      "lw_id": "LAFW-2026_2"
+    },
+    {
+      "id": "3f7bf244-cadc-816a-8feb-cf1741b70f4b",
+      "course_id": "94906",
+      "active": true,
+      "lw_id": "Java-2026_2"
+    },
+    {
+      "id": "3f7bf244-cadc-81e4-9a3b-f4293c3975ee",
+      "course_id": "94909",
+      "active": true,
+      "lw_id": "Informatik_I-2026_2"
+    },
+    {
+      "id": "3f7bf244-cadc-81ba-bf60-c51a2a8220dd",
+      "course_id": "96289",
+      "active": true,
+      "lw_id": "AFWFW-2026_2"
+    },
+    {
+      "id": "348bf244-cadc-81a8-946e-d168dc816d0f",
+      "course_id": "91288",
+      "active": false,
+      "lw_id": "WA-2026_1"
+    },
+    {
+      "id": "348bf244-cadc-81b4-8df4-e108c3ee8e5a",
+      "course_id": "91465",
+      "active": false,
+      "lw_id": "BWL2-2026"
+    },
+    {
+      "id": "344bf244-cadc-818b-a4c3-dad9d46e842d",
+      "course_id": "92535",
+      "active": false,
+      "lw_id": "TAFWFW-2026_1"
+    },
+    {
+      "id": "343bf244-cadc-8137-b263-e85701fba52e",
+      "course_id": "79220",
+      "active": false,
+      "lw_id": "IT-Sicherheit_SoSe_2026"
+    },
+    {
+      "id": "342bf244-cadc-81fe-87eb-d7b3097b1113",
+      "course_id": "93329",
+      "active": true,
+      "lw_id": "OR-2026_1"
+    },
+    {
+      "id": "342bf244-cadc-81db-bfe5-d8f2b65fb602",
+      "course_id": "92812",
+      "active": false,
+      "lw_id": "Informatik_II-2026_1"
+    },
+    {
+      "id": "342bf244-cadc-8137-aa1a-c567355de08d",
+      "course_id": "92533",
+      "active": false,
+      "lw_id": "AFW-2026_1"
+    },
+    {
+      "id": "322bf244-cadc-813f-95a7-fc2388b64698",
+      "course_id": "27915",
+      "active": false,
+      "lw_id": "WI-BSc_Koord"
+    },
+    {
+      "id": "322bf244-cadc-810a-96e5-dadff708315b",
+      "course_id": "12753",
+      "active": false,
+      "lw_id": "LeCe"
+    },
+    {
+      "id": "322bf244-cadc-8199-9f3b-ca74d6b519bc",
+      "course_id": "40078",
+      "active": false,
+      "lw_id": "LC_Info"
+    },
+    {
+      "id": "322bf244-cadc-81ae-901a-ef1519f4b4f7",
+      "course_id": "79924",
+      "active": false,
+      "lw_id": "EWI-2024_2"
+    },
+    {
+      "id": "322bf244-cadc-81ca-8e92-e775436a344e",
+      "course_id": "80025",
+      "active": false,
+      "lw_id": "EIDB-2024_2"
+    },
+    {
+      "id": "322bf244-cadc-812a-997b-ce76fbf871c5",
+      "course_id": "85043",
+      "active": false,
+      "lw_id": "OR-2025_1"
+    },
+    {
+      "id": "322bf244-cadc-8187-881a-df1f4e6c181f",
+      "course_id": "88395",
+      "active": false,
+      "lw_id": "TAFWFW-2025_2"
+    },
+    {
+      "id": "322bf244-cadc-8185-b6a9-d69d3db49f80",
+      "course_id": "89398",
+      "active": false,
+      "lw_id": "Rep-Info-I-2025_2"
+    },
+    {
+      "id": "322bf244-cadc-8169-9bf7-fc88b633f797",
+      "course_id": "88113",
+      "active": false,
+      "lw_id": "MWE-2025"
+    },
+    {
+      "id": "322bf244-cadc-81f5-8015-c9e3fe468cfe",
+      "course_id": "87518",
+      "active": false,
+      "lw_id": "Java-2025_2"
+    },
+    {
+      "id": "322bf244-cadc-81eb-a396-e70a1d7c79ef",
+      "course_id": "79220",
+      "active": false,
+      "lw_id": "IT-Sicherheit_WS_2025"
+    },
+    {
+      "id": "322bf244-cadc-818a-bc4c-d9fdfa7794e2",
+      "course_id": "88671",
+      "active": false,
+      "lw_id": "Informatik_I_-2025_2"
+    },
+    {
+      "id": "322bf244-cadc-81e2-a241-c61a14a6bf50",
+      "course_id": "88119",
+      "active": false,
+      "lw_id": "FOF-2025_2"
+    },
+    {
+      "id": "322bf244-cadc-8126-904e-c6e144a9dadd",
+      "course_id": "91190",
+      "active": false,
+      "lw_id": "FAG_Mathe_WS_25"
+    },
+    {
+      "id": "322bf244-cadc-81f9-a03a-ea5dedb57339",
+      "course_id": "87647",
+      "active": false,
+      "lw_id": "EWI-2025_2"
+    },
+    {
+      "id": "322bf244-cadc-8176-ad17-f182142940e4",
+      "course_id": "88401",
+      "active": false,
+      "lw_id": "EIDB-2025_2"
+    },
+    {
+      "id": "322bf244-cadc-815f-8bfa-daace62fe8d8",
+      "course_id": "88392",
+      "active": false,
+      "lw_id": "AFWFW-2025_2"
+    },
+    {
+      "id": "322bf244-cadc-8145-93a1-c02bfb7869c8",
+      "course_id": "91937",
+      "active": true,
+      "lw_id": "DaMa-2026_1"
+    }
+  ]
+}

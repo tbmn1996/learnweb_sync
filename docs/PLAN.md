@@ -1,8 +1,11 @@
-# learnweb_sync — Projektplan
+# learnweb_sync — Architektur und Umsetzungsstand
 
 > Dieses Dokument ersetzt die beiden Explorations-Docs (`learnweb_sync_exploration.md`,
-> `learnweb_organizer_integration.md`) und ist die einzige Wahrheitsquelle für Architektur
-> und Entwicklungsplan des Projekts. Es wird als `docs/PLAN.md` im Repo geführt.
+> `learnweb_organizer_integration.md`) und beschreibt die Architektur
+> des Projekts. Der aktuelle Stand bestehender Vorhaben wird in
+> [roadmap/README.md](roadmap/README.md) gepflegt. Betrieb und Abnahme stehen in
+> [BETRIEB.md](BETRIEB.md) und [PRUEFBERICHT.md](PRUEFBERICHT.md); der aktuelle
+> Reparaturabnahme steht in [reviews/261012-Reparatur-Abnahme.md](reviews/261012-Reparatur-Abnahme.md).
 
 > **Migration 2026-05-19 abgeschlossen:** Die früheren `(TESTING)`-DBs sind jetzt
 > Produktion (`KurseLearnWeb`, `Learnweb Inhalte`); die ursprünglichen Produktions-DBs
@@ -33,11 +36,17 @@ reagieren können.
 
 **Primär: Railway-Service**
 
-Der Service läuft dauerhaft auf Railway. Ein interner APScheduler (Mo–Fr 06:00 UTC) startet
-den Sync automatisch. `state.db` liegt auf einem persistenten Railway-Volume unter `/data`.
+Der vorgesehene Dauerbetrieb liegt auf Railway. Der Scheduler-Sollplan ist Montag bis Freitag
+06:00 UTC; der Code-Default lautet `0 6 * * mon-fri`. Das produktive Manifest liegt im Railway-
+Volume `/data`, getrennt von der lokalen `state.db`.
+
+Codecommit `ae1b0a0` ist gepusht und deployed; 210 Offline-Tests bestehen. Er prüft Folder-Dateien
+auch bei unveränderten Links auf Inhaltsänderungen und wiederholt lesende LearnWeb-GETs begrenzt;
+Schreibvorgänge werden nicht wiederholt. Abgenommener Bestand, Schedulerstatus und verbleibende Grenzen
+stehen im [Reparaturbericht](reviews/261012-Reparatur-Abnahme.md).
 
 ```
-[APScheduler intern, Mo–Fr 06:00 UTC]  |  [POST /webhook/sync, manuell]
+[APScheduler intern, konfigurierte Zeit] | [POST /webhook/sync, manuell]
                     │                                    │
                     └──────────────┬─────────────────────┘
                                    ▼
@@ -59,9 +68,30 @@ den Sync automatisch. `state.db` liegt auf einem persistenten Railway-Volume unt
 Ruft per `curl` den Railway-Webhook auf. Führt kein eigenes Python aus, schreibt nicht in
 `state.db`. Dient als Operator-Trigger wenn Railway manuell gestartet werden soll.
 
+### Reparaturabnahme
+
+Der lokale Arbeitsstand verwendet inzwischen eine Gunicorn-App-Factory, validiert Notion-/Webhook-
+Konfiguration und Laufzeitpfade, speichert den letzten Lauf neben `state.db` und liefert bekannte
+Kurs-, Scan- und Pushfehler als fehlgeschlagenen Gesamtlauf zurück. Endgültige Providerblocker
+werden als `incomplete` gemeldet; sie bleiben sichtbar, werden pro Quell-URL gespeichert und
+bei Folgeläufen übersprungen. Sie lösen keinen Worker-Neustart aus. Andere technische Fehler
+können nach Erreichen der Fehlerschwelle den Gunicorn-Worker beenden; der Railway-Master kann
+ihn gemäß Restart-Policy neu starten. Der Code-Default ist `0 6 * * mon-fri`. Große Dateien
+werden gestreamt und oberhalb 20 MiB per Multipart hochgeladen; nicht unterstützte Originalformate
+bleiben als offene Anlagen.
+
+Der Sync aktualisiert eigene Originaldateien nur mit Hashnachweis. Folder-Dateien werden auch
+bei unveränderten Links auf Inhaltsänderungen geprüft. Lesende LearnWeb-GETs werden begrenzt
+wiederholt; Schreibvorgänge nicht. Aktueller Byteabgleich und gezielte Folder-Abnahmen stehen im
+[Reparaturbericht](reviews/261012-Reparatur-Abnahme.md).
+
 ---
 
-## Technische Rahmenbedingungen (geprüft)
+## Technische Rahmenbedingungen (historischer Entwicklungsstand)
+
+Diese Angaben stammen aus der bisherigen Implementierung. Sie sind kein vollständiger
+Live-Nachweis für das laufende Semester; der datierte Prüfbericht trennt aktuelle Belege
+von noch offenen Prüfungen.
 
 | Frage | Ergebnis |
 |-------|----------|
@@ -69,7 +99,7 @@ Ruft per `curl` den Railway-Webhook auf. Führt kein eigenes Python aus, schreib
 | `/my/` Dashboard | ❌ 404, aber `/my/index.php` ✅ |
 | HTML-Struktur Kursseiten | ✅ Bekannt, stabil, gut parsebar |
 | Datei-Download per Session | ✅ requests.Session mit Cookies |
-| Notion File Upload API | ✅ Vorhanden (`POST /v1/file_uploads`, bis 20MB single_part) |
+| Notion File Upload API | ✅ Vorhanden; 20 MiB Single-Part, zusätzlich Multipart im aktuellen lokalen Code. Workspace-Grenze gilt; `.ipynb` und `.pkl` werden abgelehnt. |
 | Railway Volume (SQLite) | ✅ Persistenter Speicher unter `/data`, Single-Replica |
 | Railway Multi-Replica + Volume | ❌ Nicht kombinierbar — Single-Replica ist Voraussetzung |
 
@@ -100,15 +130,15 @@ dem Mac und ist kein Teil des Railway-Prozesses.
 ### Gesamtdatenfluss
 
 ```
-[APScheduler, Mo–Fr 06:00 UTC  |  POST /webhook/sync]
+[APScheduler, konfigurierte Zeit  |  POST /webhook/sync]
          │
          ▼
 [server.py: threading.Lock.acquire(blocking=False)]
   └─ bereits aktiv → 409 Conflict / Scheduler überspringt
          │
          ▼
-[Subprozess: sys.executable learnweb_sync.py run]
-  fcntl.flock(STATE_LOCK_PATH) — sekundärer prozessübergreifender Guard
+[server.py hält fcntl.flock(STATE_LOCK_PATH)]
+  └─ startet Subprozess: sys.executable learnweb_sync.py run
          │
          ▼
 [1. Login]  sso.uni-muenster.de/LearnWeb/learnweb2/login/index.php
@@ -137,7 +167,7 @@ dem Mac und ist kein Teil des Railway-Prozesses.
          ▼
 [7. Notion-Seite anlegen]
          │  POST /v1/file_uploads → file_upload_id(s)
-         │  POST upload_url       → Datei(en) hochladen (≤20MB je Datei)
+         │  POST upload_url       → Single-Part bis 20 MiB; darüber Multipart bis Workspace-Grenze
          │  POST /v1/pages        → Seite in "Learnweb Inhalte" anlegen
          │  PATCH /v1/blocks/...  → optionale Paragraph-Blöcke für `page`-Inhalte anhängen
          ▼
@@ -161,10 +191,20 @@ dem Mac und ist kein Teil des Railway-Prozesses.
           [Learnweb-Inhalt + Meeting-Notiz in Notion]
 ```
 
-Der Worker beansprucht Aufzeichnungen atomar per SQLite und `flock`, persistiert jeden
-Zwischenstand und kann nach Abbrüchen fortsetzen. Der stabile Schlüssel lautet
-`{cmid}-{sha1(episode_id|media_url)[:12]}`. `--dry-run` hinterlässt weder Notion-Writes noch
-dauerhafte Änderungen in `state.db`.
+Der Worker beansprucht Aufzeichnungen atomar per SQLite und `flock` und persistiert
+Zwischenstände. Der ursprüngliche Code-Stand nahm verwaiste Zustände nicht wieder auf.
+Der aktuelle lokale Reparaturcode setzt sie nach exklusivem Lock fort und gleicht den
+Remote-Body vor dem Append mit gespeicherten Blöcken ab. Beim Force-Ersatz werden nur
+eindeutig eigene, unveränderte Blöcke gelöscht; manuelle Ergänzungen bleiben geschützt.
+Commit `5547703` ist bereitgestellt. Eine reale aktive Aufzeichnung lieferte 12 von 12
+zurückgelesenen Blöcken. Damit ist der normale Transkriptionspfad dieser Aufzeichnung live
+bestätigt; Force und Wiederaufnahme auf bestehenden Nutzerinhalten bleiben durch isolierte
+Tests abgedeckt und wurden nicht destruktiv live ausgeführt.
+Der stabile Schlüssel lautet `{cmid}-{sha1(discriminator)[:12]}`;
+`discriminator` ist die erste vorhandene Angabe aus Episode-ID, Medien-URL und Quell-URL.
+CLI-Dry-Runs verwenden eine In-Memory-Datenbank. Im aktuellen lokalen Code bleiben sowohl
+`--url` als auch Opencast-`--dry-run` gegenüber Notion lesend; Medienabruf und Whisper können
+trotzdem laufen.
 
 ### HTML-Parsing (Kursseiten)
 
@@ -210,9 +250,13 @@ CREATE TABLE IF NOT EXISTS resources (
     file_hash        TEXT,
     file_name        TEXT,
     notion_id        TEXT,
-    status           TEXT DEFAULT 'new'  -- new / synced / error / removed
+    status           TEXT DEFAULT 'new'  -- new / synced / error / deferred / removed
 );
 ```
+
+Das Schema oben zeigt die ursprünglichen Kernfelder. `init_db()` ergänzt unter anderem
+`failure_reason`, `failure_detail`, `last_attempt_at` und `retryable`;
+der Code ist für das vollständige Schema maßgeblich.
 
 Der lokale Worker ergänzt die Tabelle `transcripts`. Sie speichert Recording-Key,
 Quellmetadaten, Claim-/Retry-Status, temporäre Pfade, Notion-Page-IDs und den Append-Fortschritt.
@@ -241,7 +285,13 @@ Bereits synchronisierte `url`-Seiten behalten ihren historischen Bookmark-Block 
 Neue `url`-Seiten zeigen die Zieladresse ausschließlich in `Ziel-URL`; diese gemischte UI-Darstellung
 ist akzeptiert und wird nicht automatisch backfilled.
 
-**Notion File Upload Flow (2 Schritte):**
+**Notion File Upload Flow:**
+
+Das folgende Beispiel zeigt den Single-Part-Pfad bis 20 MiB. Commit `5547703` streamt größere
+Originale in Multipart-Teilen bis zur abgefragten Workspace-Grenze. PDFs mit 50 und 61 MiB
+sowie ein MOV mit 247 MiB wurden auf markierten Testseiten bytegleich zurückgelesen; die
+Testseiten sind archiviert. `.ipynb` und `.pkl` werden vom Provider auch bei Multipart abgelehnt
+und bleiben gemäß der freigegebenen Reparaturentscheidung offene Anlagen.
 
 ```python
 # Schritt 1: Upload initiieren
@@ -291,7 +341,12 @@ learnweb_sync/
 
 ---
 
-## Entwicklungsphasen
+## Historische Entwicklungsphasen
+
+Die folgenden Abschnitte erhalten die bisher dokumentierten Lieferumfänge und Ergebnisse.
+„Abgeschlossen“ bezeichnet hier den historischen Implementierungsstand, keine erneute
+Semesterabnahme. Bestätigte Restfehler stehen im [Prüfbericht](PRUEFBERICHT.md), bestehende
+offene Vorhaben ausschließlich in der [Roadmap](roadmap/README.md).
 
 ### Phase 1 — Scraper + Manifest ✅ ABGESCHLOSSEN
 
@@ -327,7 +382,13 @@ learnweb_sync/
 
 ### Lokaler Transkriptions-Worker ✅ ABGESCHLOSSEN
 
-**Deliverables:**
+**Historisch dokumentierter Lieferumfang:** Die folgenden Zusagen wurden im damaligen Plan
+als abgeschlossen geführt. Die Prüfung des Code-Baselines `6a25a1d` bestätigte die generelle
+Pipeline, aber noch keine vollständige Crash-Recovery und keinen schreibfreien Opencast-Dry-Run
+(siehe [Prüfbericht](PRUEFBERICHT.md#3-lokale-transkription)). Der aktuelle Reparaturcode ist
+mit Commit `5547703` deployed; eine reale Aufzeichnung wurde mit 12 von 12 Blöcken zurückgelesen.
+Das bestätigt den normalen Pfad dieser Aufzeichnung. Recovery und `--force` auf bestehenden
+Nutzerinhalten bleiben von dieser Live-Abnahme ausgenommen.
 - Opencast-Discovery und lokale Whisper-Transkription mit Crash-/Resume-sicherem Manifest
 - YouTube-Discovery über LearnWeb-Seiten, Untertitel-Cascade und cookie-freier Audio-Fallback
 - Idempotente Notion-Erstellung für Learnweb-Inhalt und Meeting-Notiz
@@ -336,12 +397,13 @@ learnweb_sync/
 
 ### Phase 4 — Notion-Button Trigger (optional, zurückgestellt)
 
-Railway-Webhook löst dieselbe Funktion ab. Ein Notion-Button kann direkt auf den
-Railway-Webhook-URL zeigen, sofern der Webhook-Auth-Header gesetzt werden kann.
+Bestehendes Vorhaben: [Notion-Button](roadmap/notion-button.md). Der Railway-Webhook übernimmt
+bereits den manuellen Start. Direkter Notion-Button inklusive Auth-Header ist nicht verifiziert.
 
 ### Phase 5 — Forum/Ankündigungen + Assignments (optional, Zukunft)
 
-Scope erst definieren wenn Phase 3 stabil und im Einsatz.
+Bestehende Zukunftsidee: [Foren und Aufgaben](roadmap/foren-aufgaben.md).
+Der Umfang bleibt ungeklärt; es ist keine Umsetzung freigegeben.
 
 ---
 
@@ -349,7 +411,7 @@ Scope erst definieren wenn Phase 3 stabil und im Einsatz.
 
 1. **`cmid` ist Wahrheit** — nie Name oder URL als Identität.
 2. **Nie lokal löschen** wenn etwas remote verschwindet — `status='removed'` setzen.
-3. **Bestehende Notion-Seiten nur gezielt patchen**: `folder` darf über denselben `notion_id` aktualisiert werden; andere Typen bleiben initial-only.
+3. **Bestehende Notion-Seiten nur gezielt patchen**: Der Sync gleicht Quellen über ihre eindeutige Identität ab und ergänzt fehlende Eigenschaften. Eine geänderte `resource`-Datei wird auf derselben Notion-Seite nur ersetzt, wenn die vorhandene Anlage bytegleich zum letzten Manifest-Hash ist; manuelle Änderungen bleiben erhalten. `folder`-Dateien werden pro Datei auch bei unveränderten Links auf Inhaltsänderungen geprüft. Texte von `page` und Zieladressen von `url` werden nicht allgemein aktualisiert; bestehende Kurs-Select-Werte werden nicht überschrieben. Aktuelle Quellen-, Datei- und Duplikatabnahmen stehen im Reparaturbericht.
 4. **Single-Replica** — Railway-Volume erlaubt keinen Multi-Replica-Betrieb.
 5. **`state.db` nie in main-Branch** — gitignored; Persistenz über Railway-Volume.
 6. **Organizer-Skill bleibt extern** — Sync = remote→Notion. Organize = lokal→kuratiert.
@@ -361,4 +423,13 @@ Scope erst definieren wenn Phase 3 stabil und im Einsatz.
 ## Offene Punkte / Entscheidungen
 
 - **Notion API Version**: Der Code ist auf `2022-06-28` gepinnt; eine Aktualisierung erfolgt separat.
-- **Notion-Button für Webhook**: Notion-Buttons können POST senden — prüfen ob Railway-URL direkt nutzbar ist (Auth-Header?).
+- **Notion-Button für Webhook**: Fähigkeit zu authentifizierten Aufrufen und konkrete
+  Nutzbarkeit bleiben im [Vorhaben](roadmap/notion-button.md) offen.
+
+## Dokumentationspflege
+
+Ziel und Grenzen im Abschnitt „Kontext & Problem“ bleiben bei reiner Pflege unverändert.
+Die [Roadmap](roadmap/README.md) ist wegen mehrteiliger Vorhaben und eigener Abnahmekriterien
+als Verzeichnis geführt. Nach Änderungen Umfang, Zustand und Links zwischen Übersicht und
+Vorhaben abgleichen. Beim Formwechsel Inhalte und gültige Verweise erhalten; Löschungen
+bleiben freigabepflichtig. Neue Vorhaben benötigen ausdrücklichen Auftrag oder Freigabe.

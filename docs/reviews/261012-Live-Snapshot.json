@@ -1,0 +1,451 @@
+{
+  "provenance": "Aus den Connector-Antworten dieser Codex-Task vom 12.10.2026 extrahiert; keine neue Live-Prüfung durch den Reviewer.",
+  "notionCourses": {
+    "source": "TBM Cloud MCP notion_query_database, privat, a44bf244-cadc-8266-9c11-816719a8ec06",
+    "has_more": false,
+    "rows": [
+      {
+        "id": "348bf244-cadc-81a8-946e-d168dc816d0f",
+        "lw": "WA-2026_1",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=91288",
+        "sync": true
+      },
+      {
+        "id": "348bf244-cadc-81b4-8df4-e108c3ee8e5a",
+        "lw": "BWL2-2026",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=91465",
+        "sync": true
+      },
+      {
+        "id": "344bf244-cadc-818b-a4c3-dad9d46e842d",
+        "lw": "TAFWFW-2026_1",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=92535",
+        "sync": true
+      },
+      {
+        "id": "343bf244-cadc-8137-b263-e85701fba52e",
+        "lw": "IT-Sicherheit_SoSe_2026",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=79220",
+        "sync": false
+      },
+      {
+        "id": "342bf244-cadc-81fe-87eb-d7b3097b1113",
+        "lw": "OR-2026_1",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=93329",
+        "sync": true
+      },
+      {
+        "id": "342bf244-cadc-81db-bfe5-d8f2b65fb602",
+        "lw": "Informatik_II-2026_1",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=92812",
+        "sync": true
+      },
+      {
+        "id": "342bf244-cadc-8137-aa1a-c567355de08d",
+        "lw": "AFW-2026_1",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=92533",
+        "sync": true
+      },
+      {
+        "id": "322bf244-cadc-813f-95a7-fc2388b64698",
+        "lw": "WI-BSc_Koord",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=27915",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-810a-96e5-dadff708315b",
+        "lw": "LeCe",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=12753",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-8199-9f3b-ca74d6b519bc",
+        "lw": "LC_Info",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=40078",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-81ae-901a-ef1519f4b4f7",
+        "lw": "EWI-2024_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=79924",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-81ca-8e92-e775436a344e",
+        "lw": "EIDB-2024_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=80025",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-812a-997b-ce76fbf871c5",
+        "lw": "OR-2025_1",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=85043",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-8187-881a-df1f4e6c181f",
+        "lw": "TAFWFW-2025_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88395",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-8185-b6a9-d69d3db49f80",
+        "lw": "Rep-Info-I-2025_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=89398",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-8169-9bf7-fc88b633f797",
+        "lw": "MWE-2025",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88113",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-81f5-8015-c9e3fe468cfe",
+        "lw": "Java-2025_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=87518",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-81eb-a396-e70a1d7c79ef",
+        "lw": "IT-Sicherheit_WS_2025",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=79220",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-818a-bc4c-d9fdfa7794e2",
+        "lw": "Informatik_I_-2025_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88671",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-81e2-a241-c61a14a6bf50",
+        "lw": "FOF-2025_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88119",
+        "sync": true
+      },
+      {
+        "id": "322bf244-cadc-8126-904e-c6e144a9dadd",
+        "lw": "FAG_Mathe_WS_25",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=91190",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-81f9-a03a-ea5dedb57339",
+        "lw": "EWI-2025_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=87647",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-8176-ad17-f182142940e4",
+        "lw": "EIDB-2025_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88401",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-815f-8bfa-daace62fe8d8",
+        "lw": "AFWFW-2025_2",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88392",
+        "sync": false
+      },
+      {
+        "id": "322bf244-cadc-8145-93a1-c02bfb7869c8",
+        "lw": "DaMa-2026_1",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=91937",
+        "sync": true
+      }
+    ]
+  },
+  "learnwebDashboard": {
+    "source": "LearnWeb connector learnweb_get_courses",
+    "courses": [
+      {
+        "course_id": 96289,
+        "name": "Analysis für Wirtschaftswissenschaftler/Mathematik für WI WiSe 20...",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=96289"
+      },
+      {
+        "course_id": 94909,
+        "name": "Informatik I WiSe 2026/27, Jan Vahrenhold",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=94909"
+      },
+      {
+        "course_id": 79220,
+        "name": "IT-Sicherheit an der Universität Münster (Erstis WiSe 2026/2027)",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=79220"
+      },
+      {
+        "course_id": 94906,
+        "name": "Einführung in Java WiSe 2026/27, Jan Vahrenhold, Carina da Silva",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=94906"
+      },
+      {
+        "course_id": 96296,
+        "name": "Lineare Algebra für WI/BWL WiSe 2026/27, Ingolf Terveer",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=96296"
+      },
+      {
+        "course_id": 92533,
+        "name": "Analysis für Wirtschaftswissenschaftler SoSe 2026, Ingolf Terveer",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=92533"
+      },
+      {
+        "course_id": 91465,
+        "name": "Rechnungswesen SoSe 2026, Peter Kajüter, Carl Wolff",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=91465"
+      },
+      {
+        "course_id": 91937,
+        "name": "Data Management ST 2026, Jan vom Brocke, Leonard Papenmeier",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=91937"
+      },
+      {
+        "course_id": 92812,
+        "name": "Informatik II, SoSe 2026, Lars Linsen",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=92812"
+      },
+      {
+        "course_id": 93329,
+        "name": "Operations Research SoSe 2026",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=93329"
+      },
+      {
+        "course_id": 92535,
+        "name": "Tutorium Analysis für WiWi/Mathematik für Wirtschaftswissenschaft...",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=92535"
+      },
+      {
+        "course_id": 91288,
+        "name": "Wissenschaftliches Arbeiten/Ethik SoSe 2026",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=91288"
+      },
+      {
+        "course_id": 88392,
+        "name": "Analysis für Wiwi und LA für WI/BWL WiSe 2025/26, Ingolf Terveer",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88392"
+      },
+      {
+        "course_id": 88401,
+        "name": "Einführung in die BWL WiSe 2025/26, Andreas Pfingsten",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88401"
+      },
+      {
+        "course_id": 87647,
+        "name": "Einführung in die Wirtschaftsinformatik WiSe 2025/26",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=87647"
+      },
+      {
+        "course_id": 91190,
+        "name": "FAG Mathe für Wirtschaftswissenschaftler WiSe 2025/2026",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=91190"
+      },
+      {
+        "course_id": 88119,
+        "name": "Fundamentals of Finance WiSe 2025/26, Christoph Schneider, Nicole B...",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88119"
+      },
+      {
+        "course_id": 88671,
+        "name": "Informatik I WiSe 2025/26, Lars Linsen",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88671"
+      },
+      {
+        "course_id": 87518,
+        "name": "Programmierung in Java WiSe 2025/26, Carina da Silva",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=87518"
+      },
+      {
+        "course_id": 88113,
+        "name": "Mentoring für WI Bachelor - Erstsemester WS 25/26",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88113"
+      },
+      {
+        "course_id": 89398,
+        "name": "Repetitorium Informatik I WiSe 2025/26, Matthias Wolff",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=89398"
+      },
+      {
+        "course_id": 88395,
+        "name": "Tutorium Analysis für WiWi und LA für WI/BWL WiSe 2025/26, Ingolf...",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=88395"
+      },
+      {
+        "course_id": 85043,
+        "name": "Operations Research SoSe 2025",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=85043"
+      },
+      {
+        "course_id": 80025,
+        "name": "Einführung in die BWL WiSe 2024/25, Philipp Klein",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=80025"
+      },
+      {
+        "course_id": 79924,
+        "name": "Einführung in die Wirtschaftsinformatik WiSe 2024/25",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=79924"
+      },
+      {
+        "course_id": 40078,
+        "name": "LearningCenter Informatik",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=40078"
+      },
+      {
+        "course_id": 12753,
+        "name": "LeCe - Learning Center Mathematik",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=12753"
+      },
+      {
+        "course_id": 27915,
+        "name": "Studienkoordination Bachelor Wirtschaftsinformatik",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=27915"
+      },
+      {
+        "course_id": 94743,
+        "name": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=94743",
+        "url": "https://www.uni-muenster.de/LearnWeb/learnweb2/course/view.php?id=94743"
+      }
+    ]
+  },
+  "contentSchema": [
+    {
+      "id": "322bf244-cadc-81e9-8e37-000b3f6741fe",
+      "properties": {
+        "Quelle": {
+          "type": "rich_text"
+        },
+        "Thema": {
+          "type": "rich_text"
+        },
+        "⛑️ ⛑️Übungs-/Klausuraufgaben": {
+          "type": "relation",
+          "relation": {
+            "database_id": "2e8bf244-cadc-8038-a408-f1beb1146e0e",
+            "data_source_id": "2e8bf244-cadc-8048-87d1-000b0a3521f2",
+            "type": "dual_property",
+            "dual_property": {
+              "synced_property_name": "Learnweb Inhalte",
+              "synced_property_id": "jap%60"
+            }
+          }
+        },
+        "Ziel-URL": {
+          "type": "url"
+        },
+        "Kurs": {
+          "type": "select"
+        },
+        "Reminder": {
+          "type": "date"
+        },
+        "❇️ ❇️ MUSTERLÖSUNGEN": {
+          "type": "relation",
+          "relation": {
+            "database_id": "2fabf244-cadc-80c5-8f21-f96fc858503d",
+            "data_source_id": "2fabf244-cadc-807e-b77d-000b97631dc3",
+            "type": "dual_property",
+            "dual_property": {
+              "synced_property_name": "LW Quelle",
+              "synced_property_id": "NAfP"
+            }
+          }
+        },
+        "Kategorie": {
+          "type": "select"
+        },
+        "Erstellt um": {
+          "type": "created_time"
+        },
+        "Variante": {
+          "type": "select"
+        },
+        "KurseLearnWeb": {
+          "type": "relation",
+          "relation": {
+            "database_id": "a44bf244-cadc-8266-9c11-816719a8ec06",
+            "data_source_id": "e2fbf244-cadc-834f-a79b-07ba2681c784",
+            "type": "dual_property",
+            "dual_property": {
+              "synced_property_name": "Learnweb Inhalte",
+              "synced_property_id": "gfSx"
+            }
+          }
+        },
+        "Format": {
+          "type": "select"
+        },
+        "Kurs-ID": {
+          "type": "rich_text"
+        },
+        "🍅 🍅 Pomodoros": {
+          "type": "relation",
+          "relation": {
+            "database_id": "2edbf244-cadc-80d8-9d5c-dead3ead5d46",
+            "data_source_id": "2edbf244-cadc-8090-9ca1-000b0b6fc5d4",
+            "type": "dual_property",
+            "dual_property": {
+              "synced_property_name": "Learnweb Inhalte",
+              "synced_property_id": "vE%3Ce"
+            }
+          }
+        },
+        "Nr": {
+          "type": "rich_text"
+        },
+        "LW Download": {
+          "type": "files"
+        },
+        "Erstellt von": {
+          "type": "created_by"
+        },
+        "MdHb: Veranstaltungen": {
+          "type": "relation",
+          "relation": {
+            "database_id": "38abf244-cadc-83dc-ac12-01299ecf619b",
+            "data_source_id": "cc1bf244-cadc-83bd-b957-07a577b34f63",
+            "type": "dual_property",
+            "dual_property": {
+              "synced_property_name": "Learnweb Inhalte",
+              "synced_property_id": "~SlW"
+            }
+          }
+        },
+        "LW-Inhalte": {
+          "type": "relation",
+          "relation": {
+            "database_id": "30bbf244-cadc-800c-9343-d661406637b9",
+            "data_source_id": "30bbf244-cadc-8068-815e-000bf17f5a71",
+            "type": "dual_property",
+            "dual_property": {
+              "synced_property_name": "Learnweb Inhalte",
+              "synced_property_id": "mLOM"
+            }
+          }
+        },
+        "Quell-Semester": {
+          "type": "select"
+        },
+        "MdHb: Studienleistungen": {
+          "type": "relation",
+          "relation": {
+            "database_id": "320bf244-cadc-80d8-920c-fc4e2057449d",
+            "data_source_id": "320bf244-cadc-8056-82fa-000b9aa423ef",
+            "type": "dual_property",
+            "dual_property": {
+              "synced_property_name": "Learnweb Inhalte",
+              "synced_property_id": "iLCV"
+            }
+          }
+        },
+        "Name": {
+          "type": "title"
+        }
+      }
+    }
+  ],
+  "emptyPdfAttachments": {
+    "filter": "Format=pdf AND LW Download empty",
+    "results": 0,
+    "has_more": false
+  },
+  "caution": "Livezugriff des Projekt-Tokens, Railway-Konfiguration und produktives Manifest bleiben ungeprüft."
+}
