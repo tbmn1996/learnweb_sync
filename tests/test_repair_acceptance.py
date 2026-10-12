@@ -322,6 +322,56 @@ class SyncRepairAcceptance(unittest.TestCase):
         self.assertFalse(writes, "Missing ownership checkpoint must not replace same-named manual bytes")
         self.assertIn(result["status"], ("error", "terminal_error", "retryable_error"))
 
+    def test_updated_resource_replaces_only_proven_original_at_same_page(self):
+        for new_name in ("Original.pdf", "Original_260707.pdf"):
+            with self.subTest(new_name=new_name):
+                conn, row = self.insert(notion_id="existing", status="synced")
+                try:
+                    old_hash = hashlib.md5(b"old original").hexdigest()
+                    row.update(file_name="Original.pdf", file_hash=old_hash)
+                    page = {"properties": {"Kurs": {"select": None}, "KurseLearnWeb": {"relation": [{"id": "course-page"}]}, "LW Download": {"files": [
+                        {"name": "Original.pdf", "type": "external", "external": {"url": "https://files.invalid/old"}},
+                        {"name": "Manual.pdf", "type": "external", "external": {"url": "https://files.invalid/manual"}},
+                    ]}}}
+                    with (
+                        mock.patch.object(lws, "_repair_lw_metadata", return_value=page),
+                        mock.patch.object(lws, "_notion_get_lw_page", return_value=page),
+                        mock.patch.object(lws, "_remote_attachment_hash", side_effect=lambda f: old_hash if f["name"] == "Original.pdf" else "manual-hash"),
+                        mock.patch.object(lws, "_download_resource", return_value=make_resource_file_result(new_name, b"new original")),
+                        mock.patch.object(lws, "notion_upload_file", return_value="updated-upload"),
+                        mock.patch.object(lws, "_notion_request") as request,
+                    ):
+                        result = lws._push_resource_activity(conn, mock.Mock(), row, active_course_map(), "course-page")
+                    self.assertEqual(result["status"], "updated")
+                    writes = [c.kwargs["json"]["properties"]["LW Download"]["files"] for c in request.call_args_list if "LW Download" in c.kwargs.get("json", {}).get("properties", {})]
+                    self.assertEqual(len(writes), 1)
+                    self.assertCountEqual([f["name"] for f in writes[0]], [new_name, "Manual.pdf"])
+                    self.assertIn({"name": "Manual.pdf", "type": "external", "external": {"url": "https://files.invalid/manual"}}, writes[0])
+                    saved = conn.execute("SELECT notion_id,file_name,file_hash FROM resources WHERE cmid='1'").fetchone()
+                    self.assertEqual(tuple(saved), ("existing", new_name, hashlib.md5(b"new original").hexdigest()))
+                finally:
+                    conn.close()
+
+    def test_changed_resource_never_replaces_manual_remote_revision(self):
+        conn, row = self.insert(notion_id="existing", status="synced")
+        self.addCleanup(conn.close)
+        row.update(file_name="Original.pdf", file_hash=hashlib.md5(b"old original").hexdigest())
+        page = {"properties": {"Kurs": {"select": None}, "KurseLearnWeb": {"relation": [{"id": "course-page"}]}, "LW Download": {"files": [
+            {"name": "Original.pdf", "type": "external", "external": {"url": "https://files.invalid/manual"}},
+        ]}}}
+        with (
+            mock.patch.object(lws, "_repair_lw_metadata", return_value=page),
+            mock.patch.object(lws, "_notion_get_lw_page", return_value=page),
+            mock.patch.object(lws, "_remote_attachment_hash", return_value=hashlib.md5(b"manual revision").hexdigest()),
+            mock.patch.object(lws, "_download_resource", return_value=make_resource_file_result("Original.pdf", b"new original")),
+            mock.patch.object(lws, "notion_upload_file") as upload,
+            mock.patch.object(lws, "_notion_request") as request,
+        ):
+            result = lws._push_resource_activity(conn, mock.Mock(), row, active_course_map(), "course-page")
+        self.assertIn(result["status"], ("error", "terminal_error", "retryable_error"))
+        upload.assert_not_called()
+        self.assertFalse(any("LW Download" in call.kwargs.get("json", {}).get("properties", {}) for call in request.call_args_list))
+
     def test_missing_course_metadata_is_backfilled_without_changing_manual_values(self):
         resource = {"cmid": "1", "course_id": "1", "course_shortname": "Course_2026"}
         empty = {"properties": {"Kurs": {"select": None}, "KurseLearnWeb": {"relation": []}}}

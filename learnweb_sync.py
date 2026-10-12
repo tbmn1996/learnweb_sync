@@ -1490,7 +1490,7 @@ def _repair_lw_metadata(page_id: str, resource: dict, course_page_id: str | None
 
 
 def _remote_attachment_hash(file: dict) -> str:
-    """Nur bei fehlendem Checkpoint vorhandene Anlage byteweise zur Quelle abgleichen."""
+    """Vorhandene Anlage byteweise zur Quelle oder zum gespeicherten Altstand abgleichen."""
     kind = file.get("type")
     url = file.get(kind, {}).get("url") if kind in {"file", "external"} else None
     if not url:
@@ -1620,15 +1620,16 @@ def notion_update_lw_page(
         existing_files = page["properties"].get("LW Download", {}).get("files", [])
         new_files = additions["LW Download"]["files"]
         replaced_files = []
+        for filename, expected_hash in (replace_file_hashes or {}).items():
+            matches = _find_remote_file_matches(filename, existing_files, expected_hash)
+            if len(matches) != 1 or _remote_attachment_hash(matches[0]) != expected_hash:
+                raise UploadBlockedError(f"Vorhandene Anlage {filename} nicht als eigener Quellstand belegt; bleibt erhalten")
+            replaced_files.extend(matches)
         for new_file in new_files:
             filename = new_file["name"]
-            matches = [file for file in existing_files if _is_name_match(file.get("name"), filename)]
+            matches = [file for file in existing_files if file not in replaced_files and _is_name_match(file.get("name"), filename)]
             if matches:
-                expected_hash = (replace_file_hashes or {}).get(filename)
-                if (len(matches) != 1 or not expected_hash
-                        or _remote_attachment_hash(matches[0]) != expected_hash):
-                    raise UploadBlockedError(f"Vorhandene Anlage {filename} nicht als eigener Quellstand belegt; bleibt erhalten")
-                replaced_files.extend(matches)
+                raise UploadBlockedError(f"Vorhandene Anlage {filename} nicht als eigener Quellstand belegt; bleibt erhalten")
         preserved = []
         for file in existing_files:
             if file in replaced_files:
@@ -2570,6 +2571,8 @@ def _push_resource_activity(
         "cmid": row["cmid"], "course_id": row["course_id"], "name": row["name"],
         "course_shortname": _resolve_course_shortname(course_map, row["course_id"], row["course_shortname"]),
     }
+    old_remote_file = None
+    old_remote_hash = None
     if row["notion_id"]:
         try:
             page = _repair_lw_metadata(row["notion_id"], resource, course_notion_page_id)
@@ -2578,12 +2581,8 @@ def _push_resource_activity(
             if matches:
                 if len(matches) != 1:
                     raise RuntimeError("Pflichtanlage nicht eindeutig")
-                if row.get("status") != "synced" or matches[0].get("name") != row.get("file_name"):
-                    if not row.get("file_hash") or _remote_attachment_hash(matches[0]) != row["file_hash"]:
-                        raise RuntimeError("Pflichtanlage weicht vom gespeicherten Quellhash ab")
-                _mark_activity_synced(conn, row["cmid"], row["notion_id"],
-                                      file_hash=row["file_hash"], file_name=row["file_name"])
-                return {"status": "skipped", "modtype": "resource"}
+                old_remote_file = matches[0]
+                old_remote_hash = _remote_attachment_hash(old_remote_file)
         except Exception as exc:
             _mark_activity_error(conn, row["cmid"], failure_reason="remote_reconcile_failed",
                                   failure_detail=_build_failure_detail(exception=exc))
@@ -2645,21 +2644,31 @@ def _push_resource_activity(
         file_hash = _file_hash(file_bytes)
         resource["file_hash"] = file_hash
 
+        replace_file_hashes = None
         if row["notion_id"]:
             matches = _find_remote_file_matches(file_name, files, file_hash)
             if matches:
-                if len(matches) != 1 or _remote_attachment_hash(matches[0]) != file_hash:
+                if len(matches) != 1:
+                    raise UploadBlockedError(f"Vorhandene Anlage {file_name} nicht eindeutig; bleibt erhalten")
+                remote_hash = old_remote_hash if matches[0] == old_remote_file else _remote_attachment_hash(matches[0])
+                if remote_hash == file_hash:
+                    _mark_activity_synced(conn, row["cmid"], row["notion_id"],
+                                          file_hash=file_hash, file_name=file_name)
+                    return {"status": "skipped", "modtype": "resource"}
+                if matches[0] != old_remote_file:
                     raise UploadBlockedError(f"Vorhandene Anlage {file_name} weicht von der Quelle ab; bleibt erhalten")
-                _mark_activity_synced(conn, row["cmid"], row["notion_id"],
-                                      file_hash=file_hash, file_name=file_name)
-                return {"status": "skipped", "modtype": "resource"}
+            if old_remote_file:
+                if not row.get("file_hash") or old_remote_hash != row["file_hash"]:
+                    raise UploadBlockedError("Vorhandene Pflichtanlage wurde manuell verändert; bleibt erhalten")
+                replace_file_hashes = {old_remote_file["name"]: row["file_hash"]}
 
         upload_id = notion_upload_file(file_bytes, file_name)
         if not upload_id:
             raise RuntimeError("Upload ohne bestätigte Datei-ID")
         if row["notion_id"]:
             notion_id = row["notion_id"]
-            notion_update_lw_page(notion_id, resource, upload_id, course_notion_page_id)
+            notion_update_lw_page(notion_id, resource, upload_id, course_notion_page_id,
+                                  replace_file_hashes=replace_file_hashes)
         else:
             notion_id = notion_create_lw_page(resource, upload_id, course_notion_page_id)
         _checkpoint_notion_page(conn, row, notion_id)
