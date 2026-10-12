@@ -559,7 +559,7 @@ def _is_enrolment_page(soup: BeautifulSoup, final_url: str) -> bool:
 def login(session: requests.Session) -> bool:
     """Log in via the standard Moodle form login."""
     login_url = f"{BASE_URL}/login/index.php"
-    resp = session.get(login_url)
+    resp = _get_learnweb_response(session, login_url)
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -585,7 +585,7 @@ def login(session: requests.Session) -> bool:
 
 def get_courses(session: requests.Session) -> list[dict]:
     """Return list of {course_id, name, url} for all enrolled courses."""
-    resp = session.get(f"{BASE_URL}/my/index.php")
+    resp = _get_learnweb_response(session, f"{BASE_URL}/my/index.php")
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -625,7 +625,7 @@ def get_courses(session: requests.Session) -> list[dict]:
 
 def _load_course_page(session: requests.Session, course_url: str) -> BeautifulSoup:
     """Lädt eine Kursseite und gibt den geparsten HTML-Baum zurück."""
-    resp = session.get(course_url)
+    resp = _get_learnweb_response(session, course_url)
     resp.raise_for_status()
     final_url = resp.url or course_url
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -977,7 +977,7 @@ def _folder_fingerprint(files: list[tuple[str, str]]) -> str:
 
 def _fetch_activity_soup(session: requests.Session, view_url: str) -> BeautifulSoup:
     """Lädt eine Aktivitätsseite und gibt den HTML-Baum zurück."""
-    resp = session.get(view_url, allow_redirects=True, timeout=60)
+    resp = _get_learnweb_response(session, view_url, allow_redirects=True, timeout=60)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
     if _is_login_or_error_page(soup, resp.url or view_url):
@@ -998,7 +998,7 @@ def _extract_url_target(session: requests.Session, view_url: str) -> str | None:
     Bestimmt die Ziel-URL einer Moodle-URL-Aktivität.
     Bevorzugt echte Redirect-Ziele, fällt sonst auf Links im HTML zurück.
     """
-    resp = session.get(view_url, allow_redirects=True, timeout=60)
+    resp = _get_learnweb_response(session, view_url, allow_redirects=True, timeout=60)
     resp.raise_for_status()
 
     final_url = resp.url
@@ -2212,7 +2212,7 @@ def _validate_downloaded_file(data: bytes | BinaryIO, final_url: str) -> None:
 
 
 def _retry_download_operation(operation, *, request_url: str):
-    """Führt eine Download-Operation mit begrenzten Retries für transiente Fehler aus."""
+    """Wiederholt lesende Operationen begrenzt bei Transportfehlern und transienten 5xx."""
     retryable_exceptions = (
         requests.Timeout,
         requests.exceptions.ChunkedEncodingError,
@@ -2222,20 +2222,36 @@ def _retry_download_operation(operation, *, request_url: str):
     for attempt in range(DOWNLOAD_MAX_RETRIES):
         try:
             return operation()
-        except retryable_exceptions as exc:
+        except (*retryable_exceptions, requests.HTTPError) as exc:
+            if isinstance(exc, requests.HTTPError) and (
+                exc.response is None or exc.response.status_code not in {500, 502, 503, 504}
+            ):
+                raise
             if attempt >= DOWNLOAD_MAX_RETRIES - 1:
                 raise
             wait_seconds = DOWNLOAD_RETRY_BACKOFF_SECONDS[attempt]
             log.warning(
-                "Retrybarer Download-Fehler für %s (%s: %s) – Versuch %s/%s, warte %ss",
-                request_url,
+                "Retrybarer LearnWeb-Lesefehler (%s) – Versuch %s/%s, warte %ss",
                 type(exc).__name__,
-                exc,
                 attempt + 1,
                 DOWNLOAD_MAX_RETRIES,
                 wait_seconds,
             )
             time.sleep(wait_seconds)
+
+
+def _get_learnweb_response(session: requests.Session, url: str, **kwargs) -> requests.Response:
+    """GET-Lesepfade teilen den Download-Retry; fehlgeschlagene Responses schließen."""
+    def _get_once():
+        response = session.get(url, **kwargs)
+        try:
+            response.raise_for_status()
+        except requests.HTTPError:
+            response.close()
+            raise
+        return response
+
+    return _retry_download_operation(_get_once, request_url=url)
 
 
 def _download_file_url(
@@ -2286,7 +2302,7 @@ def _download_resource(
         )
     visited_urls.add(normalized_view_url)
 
-    def _download_once() -> ResourceDownloadResult:
+    def _download_once() -> ResourceDownloadResult | str:
         resp = session.get(normalized_view_url, allow_redirects=True, stream=True, timeout=60)
         try:
             resp.raise_for_status()
@@ -2349,12 +2365,12 @@ def _download_resource(
                     title=title,
                 )
 
-            return _download_resource(session, file_url, _visited_urls=visited_urls)
+            return file_url
         finally:
             resp.close()
 
     try:
-        return _retry_download_operation(_download_once, request_url=normalized_view_url)
+        result = _retry_download_operation(_download_once, request_url=normalized_view_url)
     except (requests.Timeout, requests.exceptions.ChunkedEncodingError, requests.ConnectionError) as exc:
         return _resource_error_result(
             "retryable_error",
@@ -2365,6 +2381,9 @@ def _download_resource(
     except UploadBlockedError as exc:
         return _resource_error_result("terminal_error", failure_reason="file_size_limit",
                                       final_url=normalized_view_url, exception=exc)
+    if isinstance(result, str):
+        return _download_resource(session, result, _visited_urls=visited_urls)
+    return result
 
 
 def notion_upload_file(file_bytes: bytes | BinaryIO, filename: str) -> str | None:
@@ -3361,7 +3380,7 @@ def cmd_export_zips():
 
 def _get_zip_info(session: requests.Session, course_url: str) -> dict | None:
     """Extract contextid + sesskey needed for the ZIP download POST."""
-    resp = session.get(course_url)
+    resp = _get_learnweb_response(session, course_url)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -3379,7 +3398,7 @@ def _get_zip_info(session: requests.Session, course_url: str) -> dict | None:
     m = re.search(r"contextid=(\d+)", dl_url)
     contextid = m.group(1) if m else "0"
 
-    dl_page = session.get(dl_url)
+    dl_page = _get_learnweb_response(session, dl_url)
     dl_page.raise_for_status()
     dl_soup = BeautifulSoup(dl_page.text, "html.parser")
 
