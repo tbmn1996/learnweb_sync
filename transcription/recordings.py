@@ -332,6 +332,7 @@ def discover_recordings(
     course_id: str,
     course_shortname: str | None = None,
     course_name: str | None = None,
+    failures: list[dict] | None = None,
 ) -> list[Recording]:
     """Lädt die Opencast-View-Seite und löst sie in `Recording`-Objekte auf.
 
@@ -347,22 +348,30 @@ def discover_recordings(
     Exception nach außen geworfen, damit ein einzelner defekter Kurs den
     gesamten Scan-Lauf nicht abbricht.
     """
+    def report_failure(reason):
+        if failures is not None:
+            failures.append({"key": cmid, "stage": "discovery",
+                             "reason": str(reason), "title": course_name or cmid})
+
     try:
         response = session.get(view_url, timeout=30)
     except Exception as exc:  # requests.RequestException u. a. – defensiv breit gefasst
         logger.warning("Opencast-View-Seite nicht erreichbar (%s): %s", view_url, exc)
+        report_failure(exc)
         return []
 
     if response.status_code < 200 or response.status_code >= 300:
         logger.warning(
             "Opencast-View-Seite lieferte Status %s (%s)", response.status_code, view_url
         )
+        report_failure(f"opencast_http_{response.status_code}")
         return []
 
     try:
         episodes = parse_opencast_episodes(response.text, base_url=view_url)
     except Exception as exc:  # defensiv: Parser darf den Scan nie crashen
         logger.warning("Opencast-Episoden konnten nicht geparst werden (%s): %s", view_url, exc)
+        report_failure(exc)
         return []
 
     recordings: list[Recording] = []
@@ -389,6 +398,7 @@ def discover_recordings(
             detail_response = session.get(detail_url, timeout=30)
         except Exception as exc:
             logger.warning("Episode-Detailseite nicht erreichbar (%s): %s", detail_url, exc)
+            report_failure(exc)
             continue
 
         if detail_response.status_code < 200 or detail_response.status_code >= 300:
@@ -397,6 +407,7 @@ def discover_recordings(
                 detail_response.status_code,
                 detail_url,
             )
+            report_failure(f"opencast_detail_http_{detail_response.status_code}")
             continue
 
         try:
@@ -407,6 +418,7 @@ def discover_recordings(
                 # daher zusätzlich direkt die mp4-URLs aus dem Roh-HTML als Fallback.
                 mp4_urls = _extract_mp4_urls(detail_response.text)
                 if not mp4_urls:
+                    report_failure("opencast_detail_media_missing")
                     continue
                 episode["media_url"] = mp4_urls[0]
                 episode["recorded_at"] = episode.get("recorded_at") or _find_recorded_at(
@@ -419,9 +431,11 @@ def discover_recordings(
                 episode["title"] = episode.get("title") or detail.get("title")
         except Exception as exc:
             logger.warning("Episode-Detailseite konnte nicht geparst werden (%s): %s", detail_url, exc)
+            report_failure(exc)
             continue
 
         if not episode.get("media_url"):
+            report_failure("opencast_detail_media_missing")
             continue
 
         recordings.append(

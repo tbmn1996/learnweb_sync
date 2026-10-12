@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -279,6 +280,23 @@ def probe_duration(media_path: Path) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 
+def _run_youtube_command(cmd: list[str], *, timeout: int):
+    """Höchstens drei Aufrufe, nur bei konkreten 403-/JS-Challenge-Fehlern."""
+    for attempt in range(3):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        error = (result.stderr or "").lower()
+        permanent = any(marker in error for marker in (
+            "unavailable", "private video", "video has been removed", "copyright",
+        ))
+        transient = any(marker in error for marker in (
+            "http error 403", "403: forbidden", "js challenge", "javascript challenge",
+            "challenge solving failed", "n challenge", "nsig extraction failed",
+        ))
+        if result.returncode == 0 or permanent or not transient or attempt == 2:
+            return result
+        time.sleep(attempt + 1)
+
+
 def fetch_youtube_title(url: str) -> str | None:
     """Liest einen YouTube-Titel per yt-dlp, ohne Cookies oder Media-Download."""
     if not url:
@@ -293,9 +311,7 @@ def fetch_youtube_title(url: str) -> str | None:
         url,
     ]
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=YT_DLP_SUBS_TIMEOUT_S
-        )
+        result = _run_youtube_command(cmd, timeout=YT_DLP_SUBS_TIMEOUT_S)
     except (subprocess.TimeoutExpired, OSError):
         return None
 
@@ -390,9 +406,7 @@ def _youtube_subtitle_pass(
     ]
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=YT_DLP_SUBS_TIMEOUT_S
-        )
+        result = _run_youtube_command(cmd, timeout=YT_DLP_SUBS_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"yt-dlp Untertitel-Timeout nach {YT_DLP_SUBS_TIMEOUT_S}s für {recording.title}"
@@ -477,9 +491,7 @@ def download_youtube_audio(recording: Recording, dest_dir: Path) -> Path:
     ]
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=YT_DLP_TIMEOUT_S
-        )
+        result = _run_youtube_command(cmd, timeout=YT_DLP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"yt-dlp timeout nach {YT_DLP_TIMEOUT_S}s für {recording.title}"

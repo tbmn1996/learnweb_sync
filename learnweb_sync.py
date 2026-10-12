@@ -21,9 +21,14 @@ import re
 import sqlite3
 import sys
 import logging
+import io
+import mimetypes
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
+import unicodedata
 from urllib.parse import unquote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
@@ -112,6 +117,8 @@ PUSHABLE_MODTYPES = {"resource", "folder", "url", "page"}
 # Command auf dem Mac genutzt.
 TRANSCRIBABLE_MODTYPES = {"opencast"}
 MAX_NOTION_SINGLE_PART_BYTES = 20 * 1024 * 1024
+NOTION_UPLOAD_PART_BYTES = 10 * 1024 * 1024
+MAX_NOTION_FILE_BYTES = 5 * 1024 * 1024 * 1024
 MAX_NOTION_BLOCKS_PER_REQUEST = 100
 MAX_NOTION_RICH_TEXT_CHARS = 2000
 DOWNLOAD_MAX_RETRIES = 3
@@ -140,11 +147,24 @@ class ResourceDownloadResult:
     """Beschreibt das Ergebnis eines Resource-Probe-/Download-Versuchs."""
 
     kind: str
-    file_bytes: bytes | None = None
+    file_bytes: bytes | BinaryIO | None = None
     file_name: str | None = None
     failure_reason: str | None = None
     failure_detail: str | None = None
     final_url: str | None = None
+    page_text: str | None = None
+
+
+class CourseSyncResult(dict):
+    """Kursindex mit separaten Fehlern; bestehende dict-Aufrufer bleiben gültig."""
+
+    def __init__(self):
+        super().__init__()
+        self.errors: list[dict] = []
+
+
+class UploadBlockedError(RuntimeError):
+    """Eine Providergrenze verhindert den unveränderten Originalupload."""
 
 
 def _is_pushable_modtype(modtype: str) -> bool:
@@ -233,6 +253,8 @@ def init_db() -> sqlite3.Connection:
         conn.execute("ALTER TABLE resources ADD COLUMN last_attempt_at TEXT")
     if "retryable" not in existing:
         conn.execute("ALTER TABLE resources ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1")
+    if "attachment_state" not in existing:
+        conn.execute("ALTER TABLE resources ADD COLUMN attachment_state TEXT")
     conn.commit()
     return conn
 
@@ -607,9 +629,48 @@ def _load_course_page(session: requests.Session, course_url: str) -> BeautifulSo
     resp.raise_for_status()
     final_url = resp.url or course_url
     soup = BeautifulSoup(resp.text, "html.parser")
-    if _is_enrolment_page(soup, final_url):
+    if _is_enrolment_page(soup, final_url) or _is_login_or_error_page(soup, final_url):
         raise RuntimeError(f"Keine belegte Kursseite: {course_url} -> {final_url}")
+    if parse_course_id_from_url(final_url) != parse_course_id_from_url(course_url):
+        raise RuntimeError(f"Falsche Kursidentität: {course_url} -> {final_url}")
+    if not urlparse(final_url).path.endswith("/course/view.php"):
+        raise RuntimeError(f"Keine Kursansicht: {final_url}")
+    body = soup.find("body")
+    body_course_ids = [cls.removeprefix("course-") for cls in (body.get("class", []) if body else [])
+                       if re.fullmatch(r"course-\d+", cls)]
+    if body_course_ids and parse_course_id_from_url(course_url) not in body_course_ids:
+        raise RuntimeError("HTML-Kursidentität passt nicht zur angeforderten Kursseite")
     return soup
+
+
+def _is_login_or_error_page(soup: BeautifulSoup, final_url: str) -> bool:
+    """Erkennt Authentifizierungs- und Moodle-Fehlerseiten vor einer Übernahme."""
+    path = urlparse(final_url).path.lower()
+    return bool(
+        "/login/" in path or "/auth/" in path
+        or soup.select_one('input[name="password"], #page-login-index, form[action*="/login/"] input[name="logintoken"], #loginerrormessage, .errorbox, [data-region="error"]')
+        or _is_invalid_module_page(soup)
+        or (_extract_html_title(soup) or "").lower().startswith("error |")
+    )
+
+
+def _validate_course_inventory(soup: BeautifulSoup, activities: list[dict]) -> None:
+    """Ein Leerbestand braucht erkennbare Kursstruktur; Parsefehler sind kein Entfernen."""
+    if not soup.select("li.course-section"):
+        raise RuntimeError("Kursstruktur fehlt; Manifest bleibt erhalten")
+    for item in soup.select('li[data-for="cmitem"]'):
+        classes = item.get("class", [])
+        if "modtype_label" in classes:
+            continue
+        if not item.get("data-id") or not any(c.startswith("modtype_") for c in classes):
+            raise RuntimeError("Unvollständige Activity-Struktur; Manifest bleibt erhalten")
+    parsed = {activity["cmid"] for activity in activities}
+    expected = {
+        item.get("data-id") for item in soup.select('li[data-for="cmitem"]')
+        if "modtype_label" not in item.get("class", [])
+    }
+    if expected != parsed:
+        raise RuntimeError("Unvollständiges Activity-Inventar; Manifest bleibt erhalten")
 
 
 def _extract_restriction_info(li) -> tuple[bool, str | None]:
@@ -787,7 +848,7 @@ def _build_failure_detail(
 
 
 def _resource_file_result(
-    file_bytes: bytes,
+    file_bytes: bytes | BinaryIO,
     file_name: str,
     *,
     final_url: str | None = None,
@@ -866,6 +927,11 @@ def _extract_first_download_link(soup: BeautifulSoup) -> str | None:
     if meta_refresh_url and _is_candidate_download_url(meta_refresh_url):
         return meta_refresh_url
 
+    for node in soup.select("iframe[src], embed[src], object[data]"):
+        candidate = _normalize_absolute_url(node.get("src") or node.get("data") or "")
+        if _is_candidate_download_url(candidate):
+            return candidate
+
     for selector in (".resourceworkaround a[href]", "#region-main a[href]", "a[href]"):
         for link in soup.select(selector):
             href = (link.get("href") or "").strip()
@@ -913,7 +979,12 @@ def _fetch_activity_soup(session: requests.Session, view_url: str) -> BeautifulS
     """Lädt eine Aktivitätsseite und gibt den HTML-Baum zurück."""
     resp = session.get(view_url, allow_redirects=True, timeout=60)
     resp.raise_for_status()
-    return BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    if _is_login_or_error_page(soup, resp.url or view_url):
+        raise RuntimeError("Aktivität liefert eine Login-/Fehlerseite")
+    if "/course/view.php" in urlparse(resp.url or view_url).path:
+        raise RuntimeError("Aktivität wurde auf die Kursseite umgeleitet")
+    return soup
 
 
 def _is_same_learnweb_host(url: str) -> bool:
@@ -931,6 +1002,14 @@ def _extract_url_target(session: requests.Session, view_url: str) -> str | None:
     resp.raise_for_status()
 
     final_url = resp.url
+    if _is_same_learnweb_host(final_url or view_url) and (
+        "/login/" in urlparse(final_url or view_url).path
+        or "/course/view.php" in urlparse(final_url or view_url).path
+    ):
+        raise RuntimeError("URL-Aktivität wurde auf eine Login-/Kursseite umgeleitet")
+    if _response_is_html(resp) and _is_same_learnweb_host(final_url or view_url):
+        if _is_login_or_error_page(BeautifulSoup(resp.text, "html.parser"), final_url or view_url):
+            raise RuntimeError("URL-Aktivität liefert eine Login-/Fehlerseite")
     if (
         final_url
         and final_url != view_url
@@ -1163,6 +1242,10 @@ def notion_query_courses_db() -> dict[str, dict]:
     return {
         "by_course_id": by_course_id,
         "duplicate_course_ids": duplicate_course_ids,
+        "duplicate_active_course_ids": {
+            row["course_id"] for row in rows
+            if row["sync_content"] and row["course_id"] in duplicate_course_ids
+        },
         "by_lw_id": by_lw_id,
         "duplicate_lw_ids": duplicate_lw_ids,
     }
@@ -1303,10 +1386,14 @@ def _build_lw_page_properties(
         properties[LW_TARGET_URL_PROPERTY] = {"url": target_url}
 
     if normalized_upload_ids:
+        upload_names = resource.get("upload_names") or file_names
         properties["LW Download"] = {
             "files": [
-                {"type": "file_upload", "file_upload": {"id": upload_id}}
-                for upload_id in normalized_upload_ids
+                {
+                    "type": "file_upload", "file_upload": {"id": upload_id},
+                    **({"name": upload_names[index]} if index < len(upload_names) else {}),
+                }
+                for index, upload_id in enumerate(normalized_upload_ids)
             ]
         }
 
@@ -1316,6 +1403,151 @@ def _build_lw_page_properties(
         }
 
     return properties
+
+
+def _notion_find_lw_page(resource: dict) -> dict | None:
+    """Findet genau die Quellidentität in der aktuellen DB; Fehler bleiben Fehler."""
+    matches = []
+    cursor = None
+    while True:
+        body = {"page_size": 100, "filter": {"and": [
+            {"property": "Nr", "rich_text": {"equals": str(resource["cmid"])}},
+            {"property": "Kurs-ID", "rich_text": {"equals": str(resource["course_id"])}},
+        ]}}
+        if cursor:
+            body["start_cursor"] = cursor
+        data = _notion_request(
+            "POST", f"{NOTION_API}/databases/{NOTION_LW_DB_ID}/query",
+            headers=_notion_headers(), json=body,
+        ).json()
+        if not isinstance(data.get("results"), list) or "has_more" not in data:
+            raise RuntimeError("Unklarer Notion-Lookup; keine Neuanlage")
+        matches.extend(data["results"])
+        if not data["has_more"]:
+            break
+        next_cursor = data.get("next_cursor")
+        if not next_cursor or next_cursor == cursor:
+            raise RuntimeError("Unvollständiger Notion-Lookup; keine Neuanlage")
+        cursor = next_cursor
+    if len(matches) > 1:
+        raise RuntimeError(f"Mehrere Inhaltsseiten für cmid={resource['cmid']}; keine Neuanlage")
+    return matches[0] if matches else None
+
+
+def _notion_get_lw_page(page_id: str, resource: dict) -> dict:
+    page = _notion_request(
+        "GET", f"{NOTION_API}/pages/{page_id}", headers=_notion_headers(),
+    ).json()
+    parent = page.get("parent", {})
+    target = parent.get("database_id")
+    if not target or target.replace("-", "") != NOTION_LW_DB_ID.replace("-", ""):
+        raise RuntimeError("Manifest-Ziel liegt nicht in der aktuellen Inhaltsdatenbank")
+    if page.get("archived") or page.get("in_trash"):
+        raise RuntimeError("Manifest-Ziel ist archiviert; keine Neuanlage")
+    props = page.get("properties", {})
+    for prop, expected in (("Nr", resource["cmid"]), ("Kurs-ID", resource["course_id"])):
+        value = "".join(
+            text.get("plain_text", text.get("text", {}).get("content", ""))
+            for text in props.get(prop, {}).get("rich_text", [])
+        )
+        if value != str(expected):
+            raise RuntimeError(f"Manifest-Ziel hat andere {prop}; keine Änderung")
+    return page
+
+
+def _checkpoint_notion_page(conn: sqlite3.Connection, row: dict, page_id: str) -> None:
+    """ID vor Folgeoperationen sichern; Remote-Create-Lücke deckt der Quelllookup ab."""
+    conn.execute(
+        "UPDATE resources SET notion_id = ? WHERE cmid = ?",
+        (page_id, row["cmid"]),
+    )
+    conn.commit()
+    row["notion_id"] = page_id
+
+
+def _missing_lw_metadata(page: dict, resource: dict, course_page_id: str | None) -> dict:
+    properties = page["properties"]
+    updates = {}
+    expected = COURSE_MAP.get(resource.get("course_shortname", ""))
+    selected = (properties.get("Kurs", {}).get("select") or {}).get("name")
+    if expected and not selected:
+        updates["Kurs"] = {"select": {"name": expected}}
+    elif expected and selected != expected:
+        log.warning("Kurs-Select für cmid=%s beibehalten: %s (Mapping: %s)", resource["cmid"], selected, expected)
+    relation = properties.get("KurseLearnWeb", {}).get("relation", [])
+    if course_page_id and not relation:
+        updates["KurseLearnWeb"] = {"relation": [{"id": course_page_id}]}
+    return updates
+
+
+def _repair_lw_metadata(page_id: str, resource: dict, course_page_id: str | None) -> dict:
+    page = _notion_get_lw_page(page_id, resource)
+    updates = _missing_lw_metadata(page, resource, course_page_id)
+    if updates:
+        _notion_request("PATCH", f"{NOTION_API}/pages/{page_id}",
+                        headers=_notion_headers(), json={"properties": updates})
+    return page
+
+
+def _remote_attachment_hash(file: dict) -> str:
+    """Nur bei fehlendem Checkpoint vorhandene Anlage byteweise zur Quelle abgleichen."""
+    kind = file.get("type")
+    url = file.get(kind, {}).get("url") if kind in {"file", "external"} else None
+    if not url:
+        raise RuntimeError("Vorhandene Anlage lässt sich nicht eindeutig zurücklesen")
+    try:
+        # Eigenes Session-Objekt: keine LearnWeb-Cookies und keine Notion-API-Header.
+        with requests.Session() as session:
+            with session.get(url, stream=True, timeout=60) as response:
+                response.raise_for_status()
+                digest = hashlib.md5()
+                size = 0
+                for chunk in response.iter_content(chunk_size=256 * 1024):
+                    size += len(chunk)
+                    if size > MAX_NOTION_FILE_BYTES:
+                        raise RuntimeError("Vorhandene Anlage überschreitet die Dateigrenze")
+                    digest.update(chunk)
+                return digest.hexdigest()
+    except requests.RequestException:
+        # Presigned-URLs enthalten Credentials; sie gehören nicht in Manifest/Logs.
+        raise RuntimeError("Vorhandene Anlage konnte nicht byteweise abgeglichen werden") from None
+
+
+def _normalize_attachment_name(name: str | None) -> str:
+    if not name:
+        return ""
+    normalized = unicodedata.normalize("NFKD", name)
+    without_marks = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    return without_marks.replace(" ", "_").lower()
+
+
+def _is_name_match(name1: str | None, name2: str | None) -> bool:
+    if not name1 or not name2:
+        return False
+    if name1 == name2:
+        return True
+    return _normalize_attachment_name(name1) == _normalize_attachment_name(name2)
+
+
+def _find_remote_file_matches(filename: str | None, remote_files: list[dict], target_hash: str | None = None) -> list[dict]:
+    if not remote_files:
+        return []
+    if filename:
+        exact = [f for f in remote_files if f.get("name") == filename]
+        if exact:
+            return exact
+        norm_candidates = [f for f in remote_files if _is_name_match(f.get("name"), filename)]
+        if norm_candidates:
+            if target_hash:
+                hash_matches = [f for f in norm_candidates if _remote_attachment_hash(f) == target_hash]
+                if len(hash_matches) == 1:
+                    return hash_matches
+            return norm_candidates
+    if target_hash:
+        hash_matches = [f for f in remote_files if _remote_attachment_hash(f) == target_hash]
+        if hash_matches:
+            return hash_matches
+    return []
 
 
 def notion_create_lw_page(
@@ -1329,6 +1561,29 @@ def notion_create_lw_page(
     Legt eine neue Seite in Learnweb Inhalte an.
     Gibt die Notion page_id zurück.
     """
+    existing = _notion_find_lw_page(resource)
+    if existing:
+        raw_filenames = resource.get("upload_names") or resource.get("file_names") or [resource.get("file_name")]
+        filenames = [f for f in raw_filenames if f is not None]
+        remote_files = existing.get("properties", {}).get("LW Download", {}).get("files", [])
+        ids = _normalize_file_upload_ids(file_upload_ids)
+        if ids and len(filenames) != len(ids):
+            raise RuntimeError("Upload-Dateinamen nicht eindeutig; bestehende Anlagen bleiben erhalten")
+        matched_filenames = set()
+        for filename in filenames:
+            matches = _find_remote_file_matches(filename, remote_files, resource.get("file_hash"))
+            if matches:
+                if len(matches) != 1 or not resource.get("file_hash"):
+                    raise RuntimeError("Bestehende Anlage nicht eindeutig zur Quelle zuordenbar")
+                if _remote_attachment_hash(matches[0]) != resource["file_hash"]:
+                    raise UploadBlockedError(f"Vorhandene Anlage {filename} weicht von der Quelle ab; bleibt erhalten")
+                matched_filenames.add(filename)
+        pending = [(upload_id, filename) for upload_id, filename in zip(ids, filenames) if filename not in matched_filenames]
+        resource = {**resource, "upload_names": [filename for _, filename in pending]}
+        file_upload_ids = [upload_id for upload_id, _ in pending]
+        notion_update_lw_page(existing["id"], resource, file_upload_ids,
+                              course_notion_page_id, target_url=target_url)
+        return existing["id"]
     resp = _notion_request(
         "POST",
         f"{NOTION_API}/pages",
@@ -1353,20 +1608,46 @@ def notion_update_lw_page(
     course_notion_page_id: str | None,
     *,
     target_url: str | None = None,
+    replace_file_hashes: dict[str, str] | None = None,
 ) -> None:
-    """Aktualisiert die Properties einer bestehenden LearnWeb-Inhaltsseite."""
+    """Ergänzt Anlagen/Ziel und leere Zuordnung, erhält manuelle Metadaten."""
+    page = _notion_get_lw_page(page_id, resource)
+    properties = _missing_lw_metadata(page, resource, course_notion_page_id)
+    additions = _build_lw_page_properties(
+        resource, None, file_upload_ids=file_upload_ids, target_url=target_url,
+    )
+    if "LW Download" in additions:
+        existing_files = page["properties"].get("LW Download", {}).get("files", [])
+        new_files = additions["LW Download"]["files"]
+        replaced_files = []
+        for new_file in new_files:
+            filename = new_file["name"]
+            matches = [file for file in existing_files if _is_name_match(file.get("name"), filename)]
+            if matches:
+                expected_hash = (replace_file_hashes or {}).get(filename)
+                if (len(matches) != 1 or not expected_hash
+                        or _remote_attachment_hash(matches[0]) != expected_hash):
+                    raise UploadBlockedError(f"Vorhandene Anlage {filename} nicht als eigener Quellstand belegt; bleibt erhalten")
+                replaced_files.extend(matches)
+        preserved = []
+        for file in existing_files:
+            if file in replaced_files:
+                continue
+            kind = file.get("type")
+            if kind not in {"file", "external", "file_upload"}:
+                raise RuntimeError("Unbekannter vorhandener Anlagentyp; kein Ersetzen")
+            field = "id" if kind == "file_upload" else "url"
+            preserved.append({"name": file["name"], "type": kind, kind: {field: file[kind][field]}})
+        properties["LW Download"] = {"files": preserved + new_files}
+    if target_url:
+        properties[LW_TARGET_URL_PROPERTY] = {"url": target_url}
+    if not properties:
+        return
     _notion_request(
         "PATCH",
         f"{NOTION_API}/pages/{page_id}",
         headers=_notion_headers(),
-        json={
-            "properties": _build_lw_page_properties(
-                resource,
-                course_notion_page_id,
-                file_upload_ids=file_upload_ids,
-                target_url=target_url,
-            )
-        },
+        json={"properties": properties},
     )
 
 
@@ -1380,6 +1661,40 @@ def notion_append_page_children(page_id: str, children: list[dict]) -> None:
             headers=_notion_headers(),
             json={"children": batch},
         )
+
+
+def _append_lw_page_body(page_id: str, blocks: list[dict]) -> None:
+    """Nach Create-/Append-Abbruch vorhandenes Textpräfix prüfen und nur Rest anhängen."""
+    existing = []
+    cursor = None
+    while True:
+        params = {"page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        data = _notion_request("GET", f"{NOTION_API}/blocks/{page_id}/children",
+                               headers=_notion_headers(), params=params).json()
+        if not isinstance(data.get("results"), list) or "has_more" not in data:
+            raise RuntimeError("Unklarer Remote-Body; kein blindes Append")
+        existing.extend(data["results"])
+        if not data["has_more"]:
+            break
+        next_cursor = data.get("next_cursor")
+        if not next_cursor or next_cursor == cursor:
+            raise RuntimeError("Unvollständiger Remote-Body; kein blindes Append")
+        cursor = next_cursor
+
+    def paragraph_text(block):
+        if block.get("type") != "paragraph":
+            return None
+        return "".join(text.get("plain_text", text.get("text", {}).get("content", ""))
+                       for text in block.get("paragraph", {}).get("rich_text", []))
+
+    matched = 0
+    for old, desired in zip(existing, blocks):
+        if paragraph_text(old) != paragraph_text(desired):
+            raise RuntimeError("Remote-Body weicht vom Quellpräfix ab; manuelle Inhalte bleiben erhalten")
+        matched += 1
+    notion_append_page_children(page_id, blocks[matched:])
 
 
 def notion_archive_page(page_id: str) -> None:
@@ -1474,7 +1789,7 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
     known_unique = len(notion_courses["by_lw_id"]) + len(notion_courses["duplicate_lw_ids"])
     log.info(f"  {known_unique} Kurs/Kurse bereits in Notion erfasst")
 
-    course_map: dict[str, dict] = {}
+    course_map = CourseSyncResult()
     new_courses: list[str] = []
     conflict_courses: list[str] = []
     known_courses = 0
@@ -1501,6 +1816,8 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
                 f"überspringe {course['name']}"
             )
             conflict_courses.append(blocked)
+            if course_id in notion_courses.get("duplicate_active_course_ids", set()):
+                course_map.errors.append({"course_id": course_id, "stage": "courses", "reason": "duplicate_active_course_id"})
             course_map[course_id] = {
                 "name": course["name"],
                 "shortname": None,
@@ -1518,6 +1835,11 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
             shortname = _extract_shortname(soup)
         except Exception as e:
             log.error(f"  Fehler beim Laden von {course['name']}: {e}")
+            course_map.errors.append({"course_id": course_id, "stage": "course_load", "reason": str(e)})
+            continue
+
+        if not shortname or shortname == "UNKNOWN":
+            course_map.errors.append({"course_id": course_id, "stage": "course_load", "reason": "missing_shortname"})
             continue
 
         if shortname in notion_courses["duplicate_lw_ids"]:
@@ -1527,6 +1849,7 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
                 f"überspringe {course['name']}"
             )
             conflict_courses.append(blocked)
+            course_map.errors.append({"course_id": course_id, "stage": "courses", "reason": "duplicate_lw_id"})
             course_map[course_id] = {
                 "name": course["name"],
                 "shortname": shortname,
@@ -1543,7 +1866,12 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
             page_id = notion_row["page_id"]
             sync_content = notion_row["sync_content"]
             if notion_row["url"] != course["url"]:
-                notion_update_course(page_id, course_url=course["url"])
+                try:
+                    notion_update_course(page_id, course_url=course["url"])
+                except Exception as e:
+                    course_map.errors.append({"course_id": course_id, "stage": "course_update", "reason": str(e)})
+                    log.error("Kurs-URL konnte nicht aktualisiert werden: %s", e)
+                    continue
                 old_course_id = notion_row.get("course_id")
                 if old_course_id and notion_courses["by_course_id"].get(old_course_id) == notion_row:
                     notion_courses["by_course_id"].pop(old_course_id, None)
@@ -1571,6 +1899,7 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
                 new_courses.append(shortname)
             except Exception as e:
                 log.error(f"  Fehler beim Anlegen von {shortname}: {e}")
+                course_map.errors.append({"course_id": course_id, "stage": "course_create", "reason": str(e)})
                 page_id = None
                 sync_content = False
 
@@ -1598,6 +1927,10 @@ def cmd_sync_courses(session: requests.Session | None = None) -> dict[str, dict]
             print(f"    ! {name}")
     print("=" * 60 + "\n")
 
+    if course_map.errors:
+        log.error("Kursabgleich unvollständig: %s Fehler", len(course_map.errors))
+        if own_session:
+            sys.exit(1)
     return course_map
 
 
@@ -1609,6 +1942,7 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
     session und course_map können von cmd_run() übergeben werden, um
     doppelten Login zu vermeiden.
     """
+    own_session = session is None
     # Eigener Login nur wenn kein Session von außen übergeben wurde
     if session is None:
         session = requests.Session()
@@ -1629,9 +1963,12 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
         "total_new": 0,
         "new_by_course": {},
         "tracked_only_courses": [],
+        "errors": list(getattr(course_map, "errors", [])),
     }
     if not active_courses:
         log.warning("Keine konfliktfreien Kurse mit SyncContent=true – nichts zu scannen.")
+        if own_session and scan_result["errors"]:
+            sys.exit(1)
         return scan_result
 
     # Schritt 2: Nur konfliktfreie Kurse mit SyncContent=true scannen
@@ -1651,8 +1988,10 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
                 soup = _load_course_page(session, info["url"])
                 shortname = _extract_shortname(soup)
                 activities = _extract_activities(soup, course)
+                _validate_course_inventory(soup, activities)
             except Exception as e:
                 log.error(f"Fehler beim Scrapen von {info.get('shortname') or course_id}: {e}")
+                scan_result["errors"].append({"course_id": course_id, "stage": "scan", "reason": str(e)})
                 continue
 
             info["shortname"] = shortname
@@ -1724,6 +2063,8 @@ def cmd_scan(session: requests.Session | None = None, course_map: dict | None = 
     scan_result["total_new"] = total_new
     scan_result["new_by_course"] = new_by_course
     scan_result["tracked_only_courses"] = tracked_only_courses
+    if own_session and scan_result["errors"]:
+        sys.exit(1)
     return scan_result
 
 
@@ -1785,8 +2126,8 @@ def _guess_format(filename: str) -> str | None:
     return ext if ext in {"pdf", "ipynb", "py", "pkl", "zip"} else None
 
 
-def _read_download_response(resp: requests.Response) -> tuple[bytes, str] | None:
-    """Liest einen Download-Response in RAM und beachtet das Notion-Upload-Limit."""
+def _read_download_response(resp: requests.Response) -> tuple[bytes | BinaryIO, str]:
+    """Kleine Dateien als Bytes, große als temporäre Datei mit begrenztem RAM."""
     cd = resp.headers.get("Content-Disposition", "")
     match = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\"';\r\n]+)", cd, re.IGNORECASE)
     if match:
@@ -1795,24 +2136,78 @@ def _read_download_response(resp: requests.Response) -> tuple[bytes, str] | None
         filename = _extract_filename_from_url(resp.url)
 
     content_length = int(resp.headers.get("Content-Length", 0))
-    if content_length > MAX_NOTION_SINGLE_PART_BYTES:
-        log.warning(
-            f"Datei zu groß laut Content-Length ({content_length / 1024 / 1024:.1f} MB) – überspringe: {filename}"
-        )
-        return None
+    if content_length > MAX_NOTION_FILE_BYTES:
+        raise UploadBlockedError(f"Datei überschreitet Notions 5-GiB-Grenze: {filename}")
+    downloaded = tempfile.SpooledTemporaryFile(max_size=MAX_NOTION_SINGLE_PART_BYTES)
+    try:
+        size = 0
+        for chunk in resp.iter_content(chunk_size=256 * 1024):
+            size += len(chunk)
+            if size > MAX_NOTION_FILE_BYTES:
+                raise UploadBlockedError(f"Datei überschreitet Notions 5-GiB-Grenze: {filename}")
+            downloaded.write(chunk)
+        if content_length and size < content_length:
+            raise requests.ConnectionError(f"Unvollständiger Download: {size}/{content_length} Bytes – {filename}")
+        downloaded.seek(0)
+        if size <= MAX_NOTION_SINGLE_PART_BYTES:
+            data = downloaded.read()
+            downloaded.close()
+            return data, filename
+        return downloaded, filename
+    except BaseException:
+        downloaded.close()
+        raise
 
-    file_bytes = b"".join(resp.iter_content(chunk_size=256 * 1024))
-    if content_length and len(file_bytes) < content_length:
-        raise requests.ConnectionError(
-            f"Unvollständiger Download: {len(file_bytes)}/{content_length} Bytes – {filename}"
-        )
-    if len(file_bytes) > MAX_NOTION_SINGLE_PART_BYTES:
-        log.warning(
-            f"Datei zu groß nach Download ({len(file_bytes) / 1024 / 1024:.1f} MB) – überspringe: {filename}"
-        )
-        return None
 
-    return file_bytes, filename
+def _file_size(data: bytes | BinaryIO) -> int:
+    if isinstance(data, bytes):
+        return len(data)
+    data.seek(0, os.SEEK_END)
+    size = data.tell()
+    data.seek(0)
+    return size
+
+
+def _file_hash(data: bytes | BinaryIO) -> str:
+    if isinstance(data, bytes):
+        return hashlib.md5(data).hexdigest()
+    digest = hashlib.md5()
+    data.seek(0)
+    for chunk in iter(lambda: data.read(256 * 1024), b""):
+        digest.update(chunk)
+    data.seek(0)
+    return digest.hexdigest()
+
+
+def _close_download(data: bytes | BinaryIO | None) -> None:
+    if data is not None and not isinstance(data, bytes):
+        data.close()
+
+
+def _validate_html_file(data: bytes | BinaryIO, final_url: str) -> None:
+    if isinstance(data, bytes):
+        sample = data[:256 * 1024]
+    else:
+        data.seek(0)
+        sample = data.read(256 * 1024)
+        data.seek(0)
+    if _is_login_or_error_page(BeautifulSoup(sample, "html.parser"), final_url):
+        raise RuntimeError("HTML-Anlage liefert eine Login-/Fehlerseite")
+
+
+def _validate_downloaded_file(data: bytes | BinaryIO, final_url: str) -> None:
+    """Falsch deklarierte Login-HTML ebenfalls ablehnen, ohne Binärdateien zu parsen."""
+    path = urlparse(final_url).path
+    if "/login/" in path or "/auth/" in path:
+        raise RuntimeError("Dateidownload wurde zur Anmeldung umgeleitet")
+    if isinstance(data, bytes):
+        sample = data[:1024]
+    else:
+        data.seek(0)
+        sample = data.read(1024)
+        data.seek(0)
+    if re.match(br"\s*(?:<!doctype\s+html|<html|<head|<body)", sample, re.IGNORECASE):
+        _validate_html_file(data, final_url)
 
 
 def _retry_download_operation(operation, *, request_url: str):
@@ -1844,16 +2239,26 @@ def _retry_download_operation(operation, *, request_url: str):
 
 def _download_file_url(
     session: requests.Session, file_url: str
-) -> tuple[bytes, str] | None:
+) -> tuple[bytes | BinaryIO, str] | None:
     """Lädt eine direkte Datei-URL herunter."""
-    def _download_once() -> tuple[bytes, str] | None:
+    def _download_once() -> tuple[bytes | BinaryIO, str] | None:
         resp = session.get(file_url, allow_redirects=True, stream=True, timeout=60)
         try:
             resp.raise_for_status()
-            if _response_is_html(resp):
-                log.warning(f"Direkte Datei-URL liefert HTML statt Datei: {file_url}")
+            if _response_is_html(resp) and not (
+                _is_candidate_download_url(resp.url or file_url)
+                or "attachment" in resp.headers.get("Content-Disposition", "").lower()
+            ):
                 return None
-            return _read_download_response(resp)
+            result = _read_download_response(resp)
+            try:
+                _validate_downloaded_file(result[0], resp.url or file_url)
+                if _response_is_html(resp):
+                    _validate_html_file(result[0], resp.url or file_url)
+            except BaseException:
+                _close_download(result[0])
+                raise
+            return result
         finally:
             resp.close()
 
@@ -1892,7 +2297,10 @@ def _download_resource(
                     final_url=final_url,
                 )
 
-            if not _response_is_html(resp):
+            if not _response_is_html(resp) or (
+                _is_candidate_download_url(final_url)
+                or "attachment" in resp.headers.get("Content-Disposition", "").lower()
+            ):
                 result = _read_download_response(resp)
                 if result is None:
                     return _resource_error_result(
@@ -1901,10 +2309,23 @@ def _download_resource(
                         final_url=final_url,
                     )
                 file_bytes, file_name = result
+                try:
+                    _validate_downloaded_file(file_bytes, final_url)
+                    if _response_is_html(resp):
+                        _validate_html_file(file_bytes, final_url)
+                except BaseException:
+                    _close_download(file_bytes)
+                    raise
                 return _resource_file_result(file_bytes, file_name, final_url=final_url)
 
             soup = BeautifulSoup(resp.text, "html.parser")
             title = _extract_html_title(soup)
+            if _is_login_or_error_page(soup, final_url):
+                return _resource_error_result(
+                    "terminal_error" if _is_invalid_module_page(soup) else "retryable_error",
+                    failure_reason="invalid_module" if _is_invalid_module_page(soup) else "login_or_error_page",
+                    final_url=final_url, title=title,
+                )
             if _is_invalid_module_page(soup):
                 return _resource_error_result(
                     "terminal_error",
@@ -1915,6 +2336,11 @@ def _download_resource(
 
             file_url = _extract_first_download_link(soup)
             if file_url is None:
+                container = soup.select_one(".resourcecontent, .resource-content, #resource-content, #region-main .box.generalbox")
+                if container is not None:
+                    text = _extract_page_text_from_soup(BeautifulSoup(str(container), "html.parser"))
+                    if text:
+                        return ResourceDownloadResult(kind="page", page_text=text, final_url=final_url)
                 return _resource_error_result(
                     "retryable_error",
                     failure_reason="html_no_download_link",
@@ -1935,43 +2361,72 @@ def _download_resource(
             final_url=normalized_view_url,
             exception=exc,
         )
+    except UploadBlockedError as exc:
+        return _resource_error_result("terminal_error", failure_reason="file_size_limit",
+                                      final_url=normalized_view_url, exception=exc)
 
 
-def notion_upload_file(file_bytes: bytes, filename: str) -> str | None:
-    """
-    Lädt eine Datei über die Notion File Upload API hoch (single_part, max 20 MB).
-    Gibt die file_upload_id zurück, oder None bei Überschreitung des Größenlimits.
-    """
-    if len(file_bytes) > MAX_NOTION_SINGLE_PART_BYTES:
-        log.warning(
-            f"Datei zu groß ({len(file_bytes) / 1024 / 1024:.1f} MB) – kein Upload: {filename}"
-        )
-        return None
-
-    # Datei-Typ ermitteln
+def notion_upload_file(file_bytes: bytes | BinaryIO, filename: str) -> str | None:
+    """Originaldatei mit MIME/Name; über 20 MiB in begrenzten Multipart-Stücken."""
+    size = _file_size(file_bytes)
+    if not size:
+        raise UploadBlockedError(f"Leere Datei ist nicht uploadbar: {filename}")
+    if len(filename.encode("utf-8")) > 900:
+        raise UploadBlockedError(f"Originaldateiname überschreitet Notions 900-Byte-Grenze: {filename}")
     ext = Path(filename).suffix.lower()
-    content_type = "application/pdf" if ext == ".pdf" else "application/octet-stream"
-
-    # Schritt 1: Upload-Objekt erstellen
-    resp = _notion_request(
-        "POST",
-        f"{NOTION_API}/file_uploads",
-        headers={"Authorization": f"Bearer {NOTION_TOKEN}", "Notion-Version": NOTION_VERSION},
-        json={"mode": "single_part", "content_type": content_type},
-    )
-    upload_id = resp.json()["id"]
-    upload_url = resp.json()["upload_url"]
-
-    # Schritt 2: Datei hochladen — POST (nicht PUT!) + Notion-Version Header erforderlich
-    # Content-Type darf hier NICHT im Header stehen (multipart/form-data wird automatisch gesetzt)
-    _notion_request(
-        "POST",
-        upload_url,
-        headers={"Authorization": f"Bearer {NOTION_TOKEN}", "Notion-Version": NOTION_VERSION},
-        files={"file": (filename, file_bytes, content_type)},
-    )
-
-    return upload_id
+    if ext in {".pkl", ".pickle"}:
+        raise UploadBlockedError(f"Notion unterstützt kein Pickle-Original: {filename}")
+    content_type = {
+        ".ipynb": "application/json", ".py": "text/x-python",
+        ".mov": "video/quicktime", ".html": "text/html", ".htm": "text/html",
+    }.get(ext) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    headers = {"Authorization": f"Bearer {NOTION_TOKEN}", "Notion-Version": NOTION_VERSION}
+    # Workspace-Grenze vor der Upload-Anlage lesen; Lookupfehler sind kein Freibrief.
+    bot = _notion_request("GET", f"{NOTION_API}/users/me", headers=_notion_headers()).json()
+    limit = bot.get("bot", {}).get("workspace_limits", {}).get("max_file_upload_size_in_bytes")
+    if not isinstance(limit, int) or limit <= 0:
+        raise RuntimeError("Notion-Workspace-Uploadgrenze nicht eindeutig verfügbar")
+    if size > min(limit, MAX_NOTION_FILE_BYTES):
+        raise UploadBlockedError(f"Original überschreitet Workspace-Grenze ({limit} Bytes): {filename}")
+    multipart = size > MAX_NOTION_SINGLE_PART_BYTES
+    body = {"mode": "multi_part" if multipart else "single_part",
+            "filename": filename, "content_type": content_type}
+    parts = (size + NOTION_UPLOAD_PART_BYTES - 1) // NOTION_UPLOAD_PART_BYTES
+    if multipart:
+        body["number_of_parts"] = parts
+    source = io.BytesIO(file_bytes) if isinstance(file_bytes, bytes) else file_bytes
+    try:
+        response = _notion_request("POST", f"{NOTION_API}/file_uploads", headers=headers, json=body).json()
+        upload_id, upload_url = response["id"], response["upload_url"]
+        source.seek(0)
+        for number in range(1, (parts if multipart else 1) + 1):
+            # requests kodiert nur einen begrenzten Teil, nie die gesamte große Datei.
+            chunk = source.read(NOTION_UPLOAD_PART_BYTES if multipart else MAX_NOTION_SINGLE_PART_BYTES)
+            kwargs = {"data": {"part_number": str(number)}} if multipart else {}
+            sent = _notion_request("POST", upload_url, headers=headers,
+                                   files={"file": (filename, chunk, content_type)}, timeout=120, **kwargs).json()
+            if not multipart and sent.get("status") != "uploaded":
+                raise RuntimeError("Dateiupload ist nicht vollständig bestätigt")
+        if multipart:
+            completed = _notion_request("POST", f"{NOTION_API}/file_uploads/{upload_id}/complete",
+                                        headers=headers, timeout=120).json()
+            if completed.get("status") != "uploaded":
+                raise RuntimeError("Multipart-Upload ist nicht vollständig bestätigt")
+        return upload_id
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 400:
+            try:
+                error = exc.response.json()
+            except ValueError:
+                error = {}
+            detail = _truncate_failure_detail(str(error.get("message", "validation_error")))
+            raise UploadBlockedError(f"Notion lehnt Original {filename} ab [{error.get('code', 'validation_error')}]: {detail}") from exc
+        raise
+    finally:
+        if isinstance(file_bytes, bytes):
+            source.close()
+        else:
+            source.seek(0)
 
 
 def _mark_activity_error(
@@ -2111,8 +2566,28 @@ def _push_resource_activity(
     if guard_result is not None:
         return guard_result
 
+    resource = {
+        "cmid": row["cmid"], "course_id": row["course_id"], "name": row["name"],
+        "course_shortname": _resolve_course_shortname(course_map, row["course_id"], row["course_shortname"]),
+    }
     if row["notion_id"]:
-        return {"status": "skipped", "modtype": "resource"}
+        try:
+            page = _repair_lw_metadata(row["notion_id"], resource, course_notion_page_id)
+            files = page["properties"].get("LW Download", {}).get("files", [])
+            matches = _find_remote_file_matches(row.get("file_name"), files, row.get("file_hash"))
+            if matches:
+                if len(matches) != 1:
+                    raise RuntimeError("Pflichtanlage nicht eindeutig")
+                if row.get("status") != "synced" or matches[0].get("name") != row.get("file_name"):
+                    if not row.get("file_hash") or _remote_attachment_hash(matches[0]) != row["file_hash"]:
+                        raise RuntimeError("Pflichtanlage weicht vom gespeicherten Quellhash ab")
+                _mark_activity_synced(conn, row["cmid"], row["notion_id"],
+                                      file_hash=row["file_hash"], file_name=row["file_name"])
+                return {"status": "skipped", "modtype": "resource"}
+        except Exception as exc:
+            _mark_activity_error(conn, row["cmid"], failure_reason="remote_reconcile_failed",
+                                  failure_detail=_build_failure_detail(exception=exc))
+            return {"status": "error", "modtype": "resource"}
 
     try:
         result = _download_resource(session, row["view_url"])
@@ -2125,6 +2600,20 @@ def _push_resource_activity(
             failure_detail=_build_failure_detail(exception=e),
         )
         return {"status": "retryable_error", "modtype": "resource"}
+
+    if result.kind == "page" and result.page_text:
+        try:
+            existed = bool(row["notion_id"])
+            notion_id = row["notion_id"] or notion_create_lw_page(resource, None, course_notion_page_id)
+            _checkpoint_notion_page(conn, row, notion_id)
+            _append_lw_page_body(notion_id, _build_paragraph_blocks(result.page_text))
+            _mark_activity_synced(conn, row["cmid"], notion_id,
+                                  file_hash=hashlib.md5(result.page_text.encode("utf-8")).hexdigest())
+            return {"status": "updated" if existed else "created", "modtype": "resource", "via": "inline_html"}
+        except Exception as exc:
+            _mark_activity_error(conn, row["cmid"], failure_reason="inline_content_failed",
+                                  failure_detail=_build_failure_detail(exception=exc))
+            return {"status": "error", "modtype": "resource"}
 
     if result.kind != "file":
         detail = f" [{result.failure_reason}]" if result.failure_reason else ""
@@ -2149,43 +2638,44 @@ def _push_resource_activity(
     assert result.file_bytes is not None
     assert result.file_name is not None
     file_bytes, file_name = result.file_bytes, result.file_name
-    file_hash = hashlib.md5(file_bytes).hexdigest()
+    resource["file_name"] = file_name
+    existed = bool(row["notion_id"])
 
-    upload_id = None
     try:
+        file_hash = _file_hash(file_bytes)
+        resource["file_hash"] = file_hash
+
+        if row["notion_id"]:
+            matches = _find_remote_file_matches(file_name, files, file_hash)
+            if matches:
+                if len(matches) != 1 or _remote_attachment_hash(matches[0]) != file_hash:
+                    raise UploadBlockedError(f"Vorhandene Anlage {file_name} weicht von der Quelle ab; bleibt erhalten")
+                _mark_activity_synced(conn, row["cmid"], row["notion_id"],
+                                      file_hash=file_hash, file_name=file_name)
+                return {"status": "skipped", "modtype": "resource"}
+
         upload_id = notion_upload_file(file_bytes, file_name)
-    except Exception as e:
-        log.warning(f"    Upload-Fehler: {e} – Seite wird ohne Datei angelegt")
-
-    resource = {
-        "cmid": row["cmid"],
-        "course_id": row["course_id"],
-        "name": row["name"],
-        "file_name": file_name,
-        "course_shortname": _resolve_course_shortname(
-            course_map, row["course_id"], row["course_shortname"]
-        ),
-    }
-
-    try:
-        notion_id = notion_create_lw_page(resource, upload_id, course_notion_page_id)
+        if not upload_id:
+            raise RuntimeError("Upload ohne bestätigte Datei-ID")
+        if row["notion_id"]:
+            notion_id = row["notion_id"]
+            notion_update_lw_page(notion_id, resource, upload_id, course_notion_page_id)
+        else:
+            notion_id = notion_create_lw_page(resource, upload_id, course_notion_page_id)
+        _checkpoint_notion_page(conn, row, notion_id)
+        _mark_activity_synced(conn, row["cmid"], notion_id,
+                              file_hash=file_hash, file_name=file_name)
     except Exception as e:
         log.error(f"    Notion-Fehler: {e}")
-        _mark_activity_error(conn, row["cmid"], file_name=file_name)
-        return {"status": "error", "modtype": "resource"}
-
-    _mark_activity_synced(
-        conn,
-        row["cmid"],
-        notion_id,
-        file_hash=file_hash,
-        file_name=file_name,
-    )
-    if upload_id:
-        log.info("    ✓ Mit Datei angelegt")
-    else:
-        log.info("    ✓ Ohne Datei angelegt (>20 MB oder Upload-Fehler)")
-    return {"status": "created", "modtype": "resource", "with_file": bool(upload_id)}
+        terminal = isinstance(e, UploadBlockedError)
+        _mark_activity_error(conn, row["cmid"], file_name=file_name,
+                              failure_reason="upload_blocked" if terminal else "upload_or_attach_failed",
+                              failure_detail=_build_failure_detail(exception=e), retryable=not terminal)
+        return {"status": "terminal_error" if terminal else "retryable_error", "modtype": "resource"}
+    finally:
+        _close_download(file_bytes)
+    log.info("    ✓ Pflichtdatei angehängt")
+    return {"status": "updated" if existed else "created", "modtype": "resource", "with_file": True}
 
 
 def _push_folder_activity(
@@ -2195,7 +2685,7 @@ def _push_folder_activity(
     course_map: dict,
     course_notion_page_id: str | None,
 ) -> dict:
-    """Pusht oder aktualisiert eine Folder-Aktivität atomar."""
+    """Erhält jede erfolgreiche Anlage; Gesamtstatus erst bei vollständigem Ordner."""
     guard_result = _guard_missing_view_url(conn, row)
     if guard_result is not None:
         return guard_result
@@ -2214,41 +2704,7 @@ def _push_folder_activity(
         return {"status": "error", "modtype": "folder"}
 
     fingerprint = _folder_fingerprint(folder_files)
-    if row["notion_id"] and row["file_hash"] == fingerprint:
-        log.info("    ✓ Folder unverändert")
-        return {"status": "skipped", "modtype": "folder"}
-
-    upload_ids: list[str] = []
-    file_names: list[str] = []
-    for _, download_url in folder_files:
-        try:
-            result = _download_file_url(session, download_url)
-        except Exception as e:
-            log.error(f"    Folder-Download-Fehler: {e}")
-            _mark_activity_error(conn, row["cmid"])
-            return {"status": "error", "modtype": "folder"}
-
-        if result is None:
-            log.error("    Folder enthält eine nicht uploadbare Datei – kompletter Folder übersprungen")
-            _mark_activity_error(conn, row["cmid"])
-            return {"status": "error", "modtype": "folder"}
-
-        file_bytes, file_name = result
-        file_names.append(file_name)
-
-        try:
-            upload_id = notion_upload_file(file_bytes, file_name)
-        except Exception as e:
-            log.error(f"    Folder-Upload-Fehler: {e}")
-            _mark_activity_error(conn, row["cmid"])
-            return {"status": "error", "modtype": "folder"}
-
-        if upload_id is None:
-            log.error("    Folder enthält eine zu große Datei – kompletter Folder übersprungen")
-            _mark_activity_error(conn, row["cmid"])
-            return {"status": "error", "modtype": "folder"}
-        upload_ids.append(upload_id)
-
+    originally_existing = bool(row["notion_id"])
     display_name = (
         f"{row['section']} — {row['name']}" if row.get("section") else row["name"]
     )
@@ -2258,30 +2714,127 @@ def _push_folder_activity(
         "name": row["name"],
         "display_name": display_name,
         "source_name": row["name"],
-        "file_names": file_names,
         "course_shortname": _resolve_course_shortname(
             course_map, row["course_id"], row["course_shortname"]
         ),
     }
 
     try:
+        state_row = conn.execute("SELECT attachment_state FROM resources WHERE cmid = ?", (row["cmid"],)).fetchone()
+        state = json.loads(state_row[0] or "{}")
+        remote_names = []
+        remote_files = []
         if row["notion_id"]:
-            notion_update_lw_page(
-                row["notion_id"],
-                resource,
-                upload_ids,
-                course_notion_page_id,
-            )
-            notion_id = row["notion_id"]
-            status = "updated"
-            log.info(f"    ✓ Folder aktualisiert ({len(upload_ids)} Datei(en))")
-        else:
-            notion_id = notion_create_lw_page(resource, upload_ids, course_notion_page_id)
-            status = "created"
-            log.info(f"    ✓ Folder angelegt ({len(upload_ids)} Datei(en))")
-    except Exception as e:
-        log.error(f"    Notion-Fehler: {e}")
-        _mark_activity_error(conn, row["cmid"])
+            page = _repair_lw_metadata(row["notion_id"], resource, course_notion_page_id)
+            remote_files = page["properties"].get("LW Download", {}).get("files", [])
+            remote_names = [file.get("name") for file in remote_files]
+        if (row["notion_id"] and row["file_hash"] == fingerprint
+                and row.get("status") == "synced"
+                and all(url in state and not state[url].get("blocked")
+                        and (remote_names.count(state[url]["name"]) == 1 or sum(_is_name_match(r, state[url]["name"]) for r in remote_names) == 1) for _, url in folder_files)):
+            return {"status": "skipped", "modtype": "folder"}
+    except Exception as exc:
+        _mark_activity_error(conn, row["cmid"], failure_reason="remote_reconcile_failed",
+                              failure_detail=_build_failure_detail(exception=exc))
+        return {"status": "error", "modtype": "folder"}
+
+    current_inventory_urls = {url for _, url in folder_files}
+    errors = []
+    file_names = []
+    changed = False
+    for display_name, download_url in folder_files:
+        previous = state.get(download_url)
+        if previous and previous.get("blocked"):
+            errors.append({"file": display_name, "reason": previous["blocked"], "terminal": True})
+            continue
+        data = None
+        try:
+            result = _download_file_url(session, download_url)
+            if result is None:
+                raise RuntimeError("Datei-URL liefert keine gültige Originaldatei")
+            data, filename = result
+            file_names.append(filename)
+            digest = _file_hash(data)
+            old_url_to_clean = None
+            if not previous:
+                old_owners = [
+                    url for url, item in state.items()
+                    if item.get("name") == filename and url not in current_inventory_urls and not item.get("blocked")
+                ]
+                if len(old_owners) == 1:
+                    previous = state[old_owners[0]]
+                    old_url_to_clean = old_owners[0]
+
+            other_owners = [url for url, item in state.items() if item.get("name") == filename and url != download_url and url in current_inventory_urls]
+            if other_owners or remote_names.count(filename) > 1:
+                raise UploadBlockedError(f"Anlagenname nicht eindeutig: {filename}")
+
+            remote_matches = [file for file in remote_files if file.get("name") == filename]
+            if not remote_matches:
+                remote_matches = [file for file in remote_files if _is_name_match(file.get("name"), filename)]
+
+            if remote_matches and (not previous or previous["hash"] == digest):
+                if len(remote_matches) != 1:
+                    raise UploadBlockedError(f"Anlagenname nicht eindeutig: {filename}")
+                remote_file = remote_matches[0]
+                # Create-/PATCH-Erfolg vor lokalem Commit: die eindeutige Anlage wiederfinden.
+                if not previous:
+                    if _remote_attachment_hash(remote_file) != digest:
+                        raise UploadBlockedError(f"Vorhandene Anlage {filename} weicht von der Quelle ab; bleibt erhalten")
+                if old_url_to_clean:
+                    state.pop(old_url_to_clean, None)
+                state[download_url] = {"name": filename, "hash": digest}
+            else:
+                if remote_matches:
+                    if len(remote_matches) != 1:
+                        raise UploadBlockedError(f"Anlagenname nicht eindeutig: {filename}")
+                    remote_file = remote_matches[0]
+                    if not previous or _remote_attachment_hash(remote_file) != previous["hash"]:
+                        raise UploadBlockedError(f"Vorhandene Anlage {filename} hat einen anderen Quellstand; bleibt erhalten")
+                upload_id = notion_upload_file(data, filename)
+                if not upload_id:
+                    raise RuntimeError("Upload ohne bestätigte Datei-ID")
+                file_resource = {**resource, "file_names": [name for name, _ in folder_files],
+                                 "upload_names": [filename], "file_hash": digest}
+                if row["notion_id"]:
+                    notion_update_lw_page(row["notion_id"], file_resource, [upload_id], course_notion_page_id,
+                                          replace_file_hashes={filename: previous["hash"]} if remote_matches else None)
+                else:
+                    notion_id = notion_create_lw_page(file_resource, [upload_id], course_notion_page_id)
+                    _checkpoint_notion_page(conn, row, notion_id)
+                page = _notion_get_lw_page(row["notion_id"], resource)
+                remote_files = page["properties"].get("LW Download", {}).get("files", [])
+                remote_names = [file.get("name") for file in remote_files]
+                if old_url_to_clean:
+                    state.pop(old_url_to_clean, None)
+                state[download_url] = {"name": filename, "hash": digest}
+                changed = True
+            conn.execute("UPDATE resources SET attachment_state = ? WHERE cmid = ?",
+                         (json.dumps(state, ensure_ascii=False), row["cmid"]))
+            conn.commit()
+        except Exception as exc:
+            terminal = isinstance(exc, UploadBlockedError)
+            if terminal and data is not None:
+                state[download_url] = {"name": filename, "hash": digest, "blocked": str(exc)}
+                conn.execute("UPDATE resources SET attachment_state = ? WHERE cmid = ?",
+                             (json.dumps(state, ensure_ascii=False), row["cmid"]))
+                conn.commit()
+            errors.append({"file": display_name, "reason": str(exc), "terminal": terminal})
+            log.error("Folder-Datei %s bleibt offen: %s", display_name, exc)
+        finally:
+            _close_download(data)
+
+    if errors:
+        terminal = all(error["terminal"] for error in errors)
+        _mark_activity_error(conn, row["cmid"], failure_reason="folder_files_blocked" if terminal else "folder_incomplete",
+                              failure_detail=_truncate_failure_detail(json.dumps(errors, ensure_ascii=False)),
+                              retryable=not terminal)
+        return {"status": "terminal_error" if terminal else "retryable_error", "modtype": "folder",
+                "errors": errors, "attachment_count": sum(not item.get("blocked") for item in state.values())}
+
+    notion_id = row["notion_id"]
+    if not notion_id:
+        _mark_activity_error(conn, row["cmid"], failure_reason="folder_missing_target")
         return {"status": "error", "modtype": "folder"}
 
     _mark_activity_synced(
@@ -2291,7 +2844,8 @@ def _push_folder_activity(
         file_hash=fingerprint,
         file_name=json.dumps(file_names, ensure_ascii=True),
     )
-    return {"status": status, "modtype": "folder", "attachment_count": len(upload_ids)}
+    status = ("updated" if originally_existing else "created") if changed else "skipped"
+    return {"status": status, "modtype": "folder", "attachment_count": len(folder_files)}
 
 
 def _push_url_activity(
@@ -2306,7 +2860,12 @@ def _push_url_activity(
     if guard_result is not None:
         return guard_result
 
-    if row["notion_id"]:
+    existed = bool(row["notion_id"])
+
+    if row["notion_id"] and row.get("status") == "synced":
+        _repair_lw_metadata(row["notion_id"], {
+            **row, "course_shortname": _resolve_course_shortname(course_map, row["course_id"], row["course_shortname"]),
+        }, course_notion_page_id)
         return {"status": "skipped", "modtype": "url"}
 
     try:
@@ -2331,17 +2890,17 @@ def _push_url_activity(
     }
 
     try:
-        notion_id = notion_create_lw_page(
-            resource,
-            None,
-            course_notion_page_id,
-            target_url=target_url,
-        )
+        if row["notion_id"]:
+            notion_id = row["notion_id"]
+            notion_update_lw_page(notion_id, resource, None, course_notion_page_id, target_url=target_url)
+        else:
+            notion_id = notion_create_lw_page(resource, None, course_notion_page_id, target_url=target_url)
     except Exception as e:
         log.error(f"    Notion-Fehler: {e}")
         _mark_activity_error(conn, row["cmid"])
         return {"status": "error", "modtype": "url"}
 
+    _checkpoint_notion_page(conn, row, notion_id)
     _mark_activity_synced(
         conn,
         row["cmid"],
@@ -2349,7 +2908,7 @@ def _push_url_activity(
         file_hash=hashlib.md5(target_url.encode("utf-8")).hexdigest(),
     )
     log.info("    ✓ URL-Seite angelegt (Ziel-URL gesetzt)")
-    return {"status": "created", "modtype": "url"}
+    return {"status": "updated" if existed else "created", "modtype": "url"}
 
 
 def _push_page_activity(
@@ -2364,8 +2923,14 @@ def _push_page_activity(
     if guard_result is not None:
         return guard_result
 
+    existed = bool(row["notion_id"])
+
     if row["notion_id"]:
-        return {"status": "skipped", "modtype": "page"}
+        _repair_lw_metadata(row["notion_id"], {
+            **row, "course_shortname": _resolve_course_shortname(course_map, row["course_id"], row["course_shortname"]),
+        }, course_notion_page_id)
+        if row.get("status") == "synced":
+            return {"status": "skipped", "modtype": "page"}
 
     # Seite einmal laden — soup wird für iframe- und Text-Pfad geteilt
     try:
@@ -2388,12 +2953,12 @@ def _push_page_activity(
     iframe_target = _extract_iframe_target(soup)
     if iframe_target:
         try:
-            notion_id = notion_create_lw_page(
-                resource,
-                None,
-                course_notion_page_id,
-                target_url=iframe_target,
-            )
+            if row["notion_id"]:
+                notion_id = row["notion_id"]
+                notion_update_lw_page(notion_id, resource, None, course_notion_page_id, target_url=iframe_target)
+            else:
+                notion_id = notion_create_lw_page(resource, None, course_notion_page_id, target_url=iframe_target)
+            _checkpoint_notion_page(conn, row, notion_id)
         except Exception as e:
             log.error(f"    Notion-Fehler: {e}")
             _mark_activity_error(conn, row["cmid"])
@@ -2406,7 +2971,7 @@ def _push_page_activity(
             file_hash=hashlib.md5(iframe_target.encode("utf-8")).hexdigest(),
         )
         log.info("    ✓ Page mit iframe-Embed angelegt (Ziel-URL gesetzt)")
-        return {"status": "created", "modtype": "page", "via": "iframe"}
+        return {"status": "updated" if existed else "created", "modtype": "page", "via": "iframe"}
 
     # ── Text-Pfad: normaler Seiteninhalt als Paragraph-Blöcke ─────────────────
     page_text = _extract_page_text_from_soup(soup)
@@ -2423,12 +2988,11 @@ def _push_page_activity(
         return {"status": "error", "modtype": "page"}
 
     try:
-        notion_id = notion_create_lw_page(resource, None, course_notion_page_id)
-        notion_append_page_children(notion_id, blocks)
+        notion_id = row["notion_id"] or notion_create_lw_page(resource, None, course_notion_page_id)
+        _checkpoint_notion_page(conn, row, notion_id)
+        _append_lw_page_body(notion_id, blocks)
     except Exception as e:
         log.error(f"    Notion-Fehler: {e}")
-        if "notion_id" in locals():
-            _archive_page_after_failure(notion_id)
         _mark_activity_error(conn, row["cmid"])
         return {"status": "error", "modtype": "page"}
 
@@ -2439,14 +3003,14 @@ def _push_page_activity(
         file_hash=hashlib.md5(page_text.encode("utf-8")).hexdigest(),
     )
     log.info(f"    ✓ Page mit {len(blocks)} Paragraph-Blöcken angelegt")
-    return {"status": "created", "modtype": "page"}
+    return {"status": "updated" if existed else "created", "modtype": "page"}
 
 
 def cmd_push(session: requests.Session | None = None, course_map: dict | None = None):
     """
     Pusht die aktuell unterstützten LearnWeb-Inhalte nach Notion.
-    `resource`, `url` und `page` werden nur initial angelegt.
-    `folder` wird zusätzlich auf Inhaltsänderungen geprüft und bei Bedarf gepatcht.
+    Fehlende Anlagen und leere Kurszuordnungen bestehender eigener Seiten nachziehen.
+    Folder behalten je Datei einen Checkpoint; Seitenanlage/Append sind wiederholbar.
 
     session und course_map können von cmd_run() übergeben werden, um
     doppelten Login und doppeltes Laden der Kursseiten zu vermeiden.
@@ -2458,6 +3022,7 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
         log.error("NOTION_LW_DB_ID nicht gesetzt")
         sys.exit(1)
 
+    own_session = session is None
     # Eigener Login nur wenn kein Session von außen übergeben wurde
     if session is None:
         session = requests.Session()
@@ -2469,6 +3034,8 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
     if course_map is None:
         course_map = cmd_sync_courses(session)
 
+    push_result = {"errors": list(getattr(course_map, "errors", [])), "counters": {}}
+
     # Nur aktive, konfliktfreie Kurse (SyncContent=true) → {course_id: notion_page_id}
     active = {
         cid: info["notion_page_id"]
@@ -2477,7 +3044,9 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
     }
     if not active:
         log.warning("Keine konfliktfreien Kurse mit SyncContent=true – nichts zu pushen.")
-        return
+        if own_session and push_result["errors"]:
+            sys.exit(1)
+        return push_result
 
     conn = init_db()
     counters: Counter[str] = Counter()
@@ -2494,7 +3063,6 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
             WHERE modtype IN ({modtype_placeholders})
               AND course_id IN ({course_placeholders})
               AND status NOT IN ('removed', 'deferred')
-              AND (modtype != 'resource' OR notion_id IS NOT NULL OR retryable = 1)
             ORDER BY course_id, first_seen
             """,
             [*sorted(PUSHABLE_MODTYPES), *list(active.keys())],
@@ -2502,7 +3070,9 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
 
         if not rows:
             print("\n✓ Keine pushbaren Inhalte im Manifest gefunden.\n")
-            return
+            if own_session and push_result["errors"]:
+                sys.exit(1)
+            return push_result
 
         log.info(f"{len(rows)} pushbare Aktivität(en) im Manifest.")
         url_schema_error: tuple[str, str] | None = None
@@ -2555,6 +3125,12 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
                 f"  Push: {row['name']} (cmid={row['cmid']}, modtype={row['modtype']})"
             )
 
+            if row["status"] == "error" and not row["retryable"] and row["modtype"] != "folder":
+                counters["terminal_error"] += 1
+                counters[f"{row['modtype']}_terminal_error"] += 1
+                push_result["errors"].append({"cmid": row["cmid"], "reason": row["failure_reason"], "status": "terminal_error"})
+                continue
+
             if (
                 row["modtype"] == "url"
                 and row["notion_id"] is None
@@ -2569,18 +3145,21 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
                 )
                 counters["error"] += 1
                 counters["url_error"] += 1
+                push_result["errors"].append({"cmid": row["cmid"], "reason": failure_reason, "status": "error"})
                 continue
 
             handler = handlers[row["modtype"]]
-            result = handler(
-                conn,
-                session,
-                row,
-                course_map,
-                active.get(row["course_id"]),
-            )
+            try:
+                result = handler(conn, session, row, course_map, active.get(row["course_id"]))
+            except Exception as exc:
+                log.error("Push für cmid=%s fehlgeschlagen: %s", row["cmid"], exc)
+                _mark_activity_error(conn, row["cmid"], failure_reason="push_exception",
+                                      failure_detail=_build_failure_detail(exception=exc))
+                result = {"status": "error", "modtype": row["modtype"]}
             counters[result["status"]] += 1
             counters[f"{row['modtype']}_{result['status']}"] += 1
+            if result["status"] in {"error", "retryable_error", "terminal_error"}:
+                push_result["errors"].append({"cmid": row["cmid"], **result})
     finally:
         conn.close()
 
@@ -2589,7 +3168,8 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
         counters["error"] + counters["retryable_error"] + counters["terminal_error"]
     )
     print(
-        "✓ Push: "
+        ("! Push: " if total_errors else "✓ Push: ")
+        +
         f"{counters['created']} erstellt, "
         f"{counters['updated']} aktualisiert, "
         f"{counters['skipped']} unverändert, "
@@ -2602,6 +3182,10 @@ def cmd_push(session: requests.Session | None = None, course_map: dict | None = 
             f"{counters['resource_terminal_error']} terminal"
         )
     print("=" * 60 + "\n")
+    push_result["counters"] = dict(counters)
+    if own_session and push_result["errors"]:
+        sys.exit(2 if all(error.get("status") == "terminal_error" for error in push_result["errors"]) else 1)
+    return push_result
 
 
 def cmd_run():
@@ -2615,18 +3199,26 @@ def cmd_run():
         sys.exit(1)
     course_map = cmd_sync_courses(session)
     scan_result = cmd_scan(session=session, course_map=course_map)
-    cmd_push(session=session, course_map=course_map)
+    push_result = cmd_push(session=session, course_map=course_map)
     tracked_only_courses = scan_result["tracked_only_courses"]
     if tracked_only_courses:
         summaries = ", ".join(
             f"{course['shortname']} [{course['course_id']}]"
             for course in tracked_only_courses
         )
-        log.error(
-            "Sync unvollständig: aktive Kurse ohne pushbare Inhalte erkannt: "
+        log.warning(
+            "Aktive Kurse enthalten ausschließlich bewusst nicht unterstützte Inhaltstypen: "
             f"{summaries}"
         )
+    push_errors = (push_result or {}).get("errors", [])
+    if (getattr(course_map, "errors", []) or scan_result.get("errors")
+            or any(error.get("status") != "terminal_error" for error in push_errors)):
+        log.error("Sync unvollständig: Fehler beim Kursabgleich, Scan oder Push")
+        sys.exit(1)
+    if push_errors:
+        log.warning("Sync unvollständig: %s Inhaltsblocker bleiben offen", len(push_errors))
         sys.exit(2)
+    return {"scan": scan_result, "push": push_result, "status": "complete"}
 
 
 def cmd_diagnose_resource_errors(
@@ -2679,7 +3271,8 @@ def cmd_diagnose_resource_errors(
     for raw_row in rows:
         row = dict(zip(columns, raw_row))
         result = _download_resource(session, row["view_url"])
-        reason = "ok" if result.kind == "file" else (result.failure_reason or "unknown")
+        reason = "ok" if result.kind in {"file", "page"} else (result.failure_reason or "unknown")
+        _close_download(result.file_bytes)
         counts[reason] += 1
         diagnosed.append(
             {
@@ -2713,8 +3306,12 @@ def cmd_diagnose_resource_errors(
 
 def cmd_export_zips():
     """Download all courses as ZIP files (legacy backup mode)."""
-    if not DOWNLOAD_DIR.exists():
-        log.error(f"DOWNLOAD_DIR does not exist: {DOWNLOAD_DIR}")
+    try:
+        DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=DOWNLOAD_DIR):
+            pass
+    except OSError as exc:
+        log.error("DOWNLOAD_DIR ist nicht beschreibbar: %s (%s)", DOWNLOAD_DIR, exc)
         sys.exit(1)
 
     log.info("=== LearnWeb ZIP Export ===")
@@ -2850,29 +3447,29 @@ def _notion_find_page_by_quelle(database_id: str, key: str) -> str | None:
     """create-or-find: sucht eine Seite mit Property `Quelle` == key.
 
     Deckt den Fall „verlorene Antwort" ab (Seite remote angelegt, Response verloren).
-    Defensiv: fehlt die Property oder schlägt die Query fehl, wird None geliefert
-    (der Aufrufer fällt dann auf die lokal persistierte page_id bzw. Neuanlage zurück).
+    Lookup-Fehler sind kein Negativtreffer; bei Mehrdeutigkeit keine Neuanlage.
     """
     if not database_id:
-        return None
-    try:
-        resp = _notion_request(
-            "POST",
-            f"{NOTION_API}/databases/{database_id}/query",
-            headers=_notion_headers(),
-            json={
-                "filter": {
-                    "property": RECORDING_QUELLE_PROPERTY,
-                    "rich_text": {"equals": key},
-                },
-                "page_size": 1,
+        raise RuntimeError("missing_recording_database")
+    resp = _notion_request(
+        "POST",
+        f"{NOTION_API}/databases/{database_id}/query",
+        headers=_notion_headers(),
+        json={
+            "filter": {
+                "property": RECORDING_QUELLE_PROPERTY,
+                "rich_text": {"equals": key},
             },
-        )
-        results = resp.json().get("results", [])
-        return results[0]["id"] if results else None
-    except Exception as exc:  # Property fehlt o. Query-Fehler → kein Match
-        log.debug("Quelle-Lookup fehlgeschlagen (%s): %s", key, exc)
-        return None
+            "page_size": 2,
+        },
+    )
+    data = resp.json()
+    results = data["results"]
+    if not isinstance(results, list):
+        raise RuntimeError("invalid_recording_source_lookup")
+    if len(results) > 1 or data.get("has_more"):
+        raise RuntimeError(f"ambiguous_recording_source: {key}")
+    return results[0]["id"] if results else None
 
 
 def _build_recording_content_properties(recording, course_page_id: str | None, key: str) -> dict:
@@ -2943,28 +3540,131 @@ def _notion_update_page_properties(page_id: str, properties: dict) -> None:
     )
 
 
-def _notion_clear_page_children(page_id: str) -> None:
-    """Löscht alle Child-Blöcke einer Seite (für --force-Body-Ersatz).
-
-    Notion bietet kein „replace"; wir holen die Children seitenweise und
-    archivieren (löschen) jeden Block einzeln.
-    """
+def _notion_recording_children(page_id: str) -> list[dict]:
+    """Liest den vollständigen Remote-Body vor einer Wiederaufnahme."""
+    children = []
+    cursor = None
     while True:
+        endpoint = f"{NOTION_API}/blocks/{page_id}/children?page_size=100"
+        if cursor:
+            endpoint += f"&start_cursor={cursor}"
         resp = _notion_request(
-            "GET",
-            f"{NOTION_API}/blocks/{page_id}/children?page_size=100",
-            headers=_notion_headers(),
+            "GET", endpoint, headers=_notion_headers(),
         )
         data = resp.json()
-        children = data.get("results", [])
-        for block in children:
-            _notion_request(
-                "DELETE",
-                f"{NOTION_API}/blocks/{block['id']}",
-                headers=_notion_headers(),
-            )
+        children.extend(data["results"])
         if not data.get("has_more"):
+            return children
+        next_cursor = data.get("next_cursor")
+        if not next_cursor or next_cursor == cursor:
+            raise RuntimeError("invalid_recording_children_cursor")
+        cursor = next_cursor
+
+
+def _recording_block_signature(block: dict) -> str:
+    """Vergleicht Sendepayload und Notion-Response ohne Server-Metadaten."""
+    kind = block.get("type")
+    payload = block.get(kind, {})
+    rich = []
+    for item in payload.get("rich_text", []):
+        annotations = item.get("annotations", {})
+        rich.append({
+            "type": item.get("type", "text"),
+            "text": {"content": item.get("text", {}).get("content", ""),
+                     "link": item.get("text", {}).get("link")},
+            "annotations": {name: annotations.get(name, False) for name in
+                            ("bold", "italic", "strikethrough", "underline", "code")},
+            "color": annotations.get("color", "default"),
+        })
+    return json.dumps([kind, payload.get("color", "default"), rich], sort_keys=True)
+
+
+def _match_recording_blocks(children, blocks, known_ids, *, replace=False):
+    """Eigene IDs oder eindeutig identische Checkpoints; Fremdtext bleibt erhalten."""
+    matched = []
+    used = set()
+    last_position = -1
+    for index, expected in enumerate(blocks):
+        known_id = known_ids[index] if index < len(known_ids) else None
+        candidates = [pos for pos, child in enumerate(children)
+                      if pos not in used and known_id and child["id"] == known_id]
+        if known_id and not candidates:
+            if replace:
+                continue
+            raise RuntimeError("recording_body_checkpoint_missing")
+        if not candidates:
+            signature = _recording_block_signature(expected)
+            candidates = [pos for pos, child in enumerate(children)
+                          if pos not in used and
+                          _recording_block_signature(child) == signature]
+            if len(candidates) > 1:
+                raise RuntimeError("ambiguous_recording_body")
+        if not candidates:
+            if replace:
+                continue  # Force darf nach einem Abbruch teilweise gelöscht sein.
+            later = {_recording_block_signature(block) for block in blocks[index + 1:]}
+            if any(_recording_block_signature(child) in later
+                   for pos, child in enumerate(children) if pos not in used):
+                raise RuntimeError("non_prefix_recording_body")
             break
+        position = candidates[0]
+        if not replace and position <= last_position:
+            raise RuntimeError("reordered_recording_body")
+        used.add(position)
+        last_position = position
+        matched.append((children[position], expected))
+    return matched
+
+
+def _reconcile_recording_body(conn, key, meeting_id, prior, blocks, body_hash, *, force, manifest):
+    """Remote-Wirkung prüfen, bevor ein lokaler Zähler zum Append berechtigt."""
+    children = _notion_recording_children(meeting_id)
+    old_blocks = json.loads(prior.get("generated_blocks_json") or "null")
+    known_ids = json.loads(prior.get("generated_block_ids_json") or "[]")
+    replacing = force or prior.get("replacement_body_json") or (
+        prior.get("body_sha256") and prior["body_sha256"] != body_hash
+    )
+    if old_blocks is None:
+        # shortcut: Altbestand ohne Checkpoint ist nur bei exaktem Text belegbar;
+        # geänderte Alttranskripte erfordern einen gesonderten Eigentumsnachweis.
+        if children and prior.get("body_sha256") and prior["body_sha256"] != body_hash:
+            raise RuntimeError("legacy_recording_body_unverified")
+        old_blocks = blocks
+    matched = _match_recording_blocks(children, old_blocks, known_ids, replace=bool(replacing))
+    if (prior.get("appended_block_count") or 0) > len(matched) and not replacing:
+        raise RuntimeError("recording_body_checkpoint_missing")
+    if children and not prior.get("generated_blocks_json") and not matched:
+        # Ein fremder Body darf nicht als leerer eigener Body interpretiert werden.
+        if prior.get("body_sha256") or prior.get("appended_block_count"):
+            raise RuntimeError("legacy_recording_body_unverified")
+    if children and not matched and not known_ids and not prior.get("replacement_body_json"):
+        # Auch ein bloßer Append-Intent beweist kein Eigentum an abweichendem Alttext.
+        for child in children:
+            rich = child.get("paragraph", {}).get("rich_text", [])
+            if rich and re.match(r"\[(?:\d+:)?\d{2}:\d{2}\]", rich[0].get("text", {}).get("content", "")):
+                raise RuntimeError("legacy_recording_body_unverified")
+    if replacing:
+        # Die Ersatzabsicht muss einen Abbruch während der einzelnen DELETEs überleben.
+        manifest.set_status(
+            conn, key, "appending",
+            generated_blocks_json=json.dumps(old_blocks, ensure_ascii=False),
+            replacement_body_json=json.dumps({"blocks": blocks, "body_hash": body_hash}, ensure_ascii=False),
+        )
+        for child, expected in matched:
+            # Manuell bearbeitete eigene Absätze und angehängte Unterblöcke erhalten.
+            if child.get("has_children") or _recording_block_signature(child) != _recording_block_signature(expected):
+                continue
+            _notion_request("DELETE", f"{NOTION_API}/blocks/{child['id']}", headers=_notion_headers())
+        matched = []
+    ids = [child["id"] for child, _ in matched]
+    manifest.set_status(
+        conn, key, "appending", body_sha256=body_hash,
+        generated_blocks_json=json.dumps(blocks, ensure_ascii=False),
+        generated_block_ids_json=json.dumps(ids),
+        replacement_body_json=None,
+        total_block_count=len(blocks), appended_block_count=len(ids),
+    )
+    return len(ids)
 
 
 def _notify_transcribe_failures(failures: list[dict]) -> None:
@@ -3058,6 +3758,7 @@ def discover_youtube_recordings(
     course_id: str,
     course_shortname: str | None = None,
     course_name: str | None = None,
+    failures: list[dict] | None = None,
 ) -> list:
     """Findet YouTube-Videos auf einer LearnWeb-Abschnitts-/Seiten-HTML.
 
@@ -3083,9 +3784,15 @@ def discover_youtube_recordings(
     activities = _extract_activities(
         soup, {"course_id": course_id, "name": course_name or course_id}
     )
+    seen_cmids = set()
     for act in activities:
         if act.get("modtype") != "url":
             continue
+        cmid = act.get("cmid")
+        if cmid and cmid in seen_cmids:
+            continue
+        if cmid:
+            seen_cmids.add(cmid)
         view_url = act.get("view_url")
         if not view_url:
             log.info("Überspringe gesperrte/linklose Aktivität: %s", act.get("name"))
@@ -3094,6 +3801,9 @@ def discover_youtube_recordings(
             target = _extract_url_target(session, _normalize_absolute_url(view_url))
         except Exception as exc:
             log.warning("mod/url nicht auflösbar (%s): %s", act.get("name"), exc)
+            if failures is not None:
+                failures.append({"key": str(cmid), "stage": "discovery",
+                                 "reason": str(exc), "title": act.get("name")})
             continue
         if not target:
             continue
@@ -3135,7 +3845,41 @@ def _open_transcribe_connection(*, dry_run: bool) -> sqlite3.Connection:
     """Öffnet den Transkriptions-State; Dry-Runs arbeiten ausschließlich im RAM."""
     conn = sqlite3.connect(":memory:") if dry_run else init_db()
     init_transcribe_schema(conn)
+    from transcription import manifest
+
+    if not dry_run:
+        manifest.init_recovery_schema(conn)
+        # Beide CLI-Pfade haben zu diesem Zeitpunkt bereits den exklusiven flock.
+        recovered = manifest.recover_interrupted(conn)
+        if recovered:
+            log.info("Wiederaufnahme: %d unterbrochene Transkriptionen freigegeben.", recovered)
     return conn
+
+
+def _lookup_transcribe_courses(session) -> dict[str, dict]:
+    """Aktuell zugängliche Kurse mit eindeutigen Notion-Kurs-IDs rein lesend verbinden."""
+    by_course = notion_query_courses_db()["by_course_id"]
+    course_map = {}
+    for course in get_courses(session):
+        row = by_course.get(course["course_id"])
+        if row:
+            course_map[course["course_id"]] = {
+                "name": course["name"], "shortname": row["lw_id"],
+                "notion_page_id": row["page_id"], "sync_content": row["sync_content"],
+                "url": course["url"],
+            }
+    return course_map
+
+
+def _finish_transcribe(processed, failures, *, matched=None, targeted=False):
+    status = "failed" if failures else "no_matching_active_recording" if targeted and not matched else "ok"
+    print(json.dumps({"command": "transcribe", "status": status,
+                      "processed": processed, "failures": len(failures), "matched": matched}))
+    _notify_transcribe_failures(failures)
+    if failures:
+        sys.exit(2)
+    if status == "no_matching_active_recording":
+        sys.exit(3)
 
 
 def cmd_transcribe_url(
@@ -3167,7 +3911,8 @@ def cmd_transcribe_url(
     lock = _acquire_transcribe_lock(TRANSCRIBE_LOCK_PATH)
     if lock is None:
         log.warning("Ein transcribe-Lauf ist bereits aktiv – beende.")
-        return
+        print(json.dumps({"command": "transcribe", "status": "busy"}))
+        sys.exit(4)
 
     session = requests.Session()
     session.headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
@@ -3191,11 +3936,7 @@ def cmd_transcribe_url(
             sys.exit(1)
 
         # Schreibfreier (read-only) Notion-Lookup für die Kurs-Verlinkung.
-        try:
-            by_course = notion_query_courses_db().get("by_course_id", {})
-        except Exception as exc:
-            log.warning("Notion-Kurs-Lookup fehlgeschlagen (%s) – ohne Kurs-Relation.", exc)
-            by_course = {}
+        by_course = notion_query_courses_db()["by_course_id"]
         row = by_course.get(course_id)
         course_page_id = row["page_id"] if row else None
         course_shortname = row["lw_id"] if row else None
@@ -3206,10 +3947,10 @@ def cmd_transcribe_url(
             course_id=course_id,
             course_shortname=course_shortname,
             course_name=course_name,
+            failures=failures,
         )
         if not recs:
             log.warning("Keine YouTube-Videos im Abschnitt gefunden: %s", url)
-            return
         log.info(
             "Abschnitt: %d YouTube-Video(s), Kurs-ID=%s%s",
             len(recs), course_id,
@@ -3235,15 +3976,12 @@ def cmd_transcribe_url(
                     failures.append(result)
         finally:
             conn.close()
+    except Exception as exc:
+        failures.append({"key": url, "stage": "source", "reason": str(exc), "title": url})
     finally:
         lock.close()
 
-    print("\n" + "=" * 60)
-    print(f"✓ Transkription (URL): {processed} Video(s) verarbeitet, {len(failures)} Fehler.")
-    print("=" * 60)
-    _notify_transcribe_failures(failures)
-    if failures:
-        sys.exit(2)
+    _finish_transcribe(processed, failures)
 
 
 def cmd_transcribe(
@@ -3264,13 +4002,13 @@ def cmd_transcribe(
 
     Args:
         force: re-transkribiert die per --cmid/--course/--url eingegrenzten Aufzeichnungen
-            und ERSETZT den Body bestehender Seiten (keine Duplikate). Ohne
+            und ersetzt belegte eigene Blöcke; manuelle Ergänzungen bleiben erhalten. Ohne
             --cmid/--course/--url unzulässig (verhindert Massen-Reprocessing).
         cmid: nur Aufzeichnungen dieser Moodle-cmid verarbeiten.
         course: nur diesen Kurs (course_id oder Shortname) verarbeiten.
         limit: Höchstzahl tatsächlich transkribierter Aufzeichnungen pro Lauf.
         dry_run: Download + Transkription ausführen, aber NICHT nach Notion schreiben
-            (Zustand wird hinterher zurückgesetzt, DB bleibt unverändert).
+            (reiner Kurslookup und In-Memory-Manifest).
         url: LearnWeb-Abschnitts-/Seiten-URL; transkribiert die dort verlinkten
             YouTube-Videos (delegiert an cmd_transcribe_url). Schließt --cmid/--course aus.
     """
@@ -3298,17 +4036,20 @@ def cmd_transcribe(
     lock = _acquire_transcribe_lock(TRANSCRIBE_LOCK_PATH)
     if lock is None:
         log.warning("Ein transcribe-Lauf ist bereits aktiv – beende.")
-        return
+        print(json.dumps({"command": "transcribe", "status": "busy"}))
+        sys.exit(4)
 
     session = requests.Session()
     session.headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 
     failures: list[dict] = []
     processed = 0
+    matched = 0
     try:
         if not login(session):
             sys.exit(1)
-        course_map = cmd_sync_courses(session)
+        course_map = _lookup_transcribe_courses(session) if dry_run else cmd_sync_courses(session)
+        failures.extend(getattr(course_map, "errors", []))
         active_courses = [
             (course_id, info)
             for course_id, info in course_map.items()
@@ -3322,11 +4063,12 @@ def cmd_transcribe(
             ]
         if not active_courses:
             log.warning("Keine passenden Kurse mit SyncContent=true gefunden.")
-            return
 
         conn = _open_transcribe_connection(dry_run=dry_run)
         try:
             for course_id, info in active_courses:
+                if limit is not None and processed >= limit:
+                    break
                 course_obj = {
                     "course_id": course_id,
                     "name": info.get("name") or info.get("shortname") or course_id,
@@ -3339,6 +4081,8 @@ def cmd_transcribe(
                     activities = _extract_activities(soup, course_obj)
                 except Exception as exc:
                     log.error("Kurs %s nicht ladbar: %s", info.get("shortname") or course_id, exc)
+                    failures.append({"key": course_id, "stage": "course",
+                                     "reason": str(exc), "title": course_obj["name"]})
                     continue
 
                 opencast_acts = [
@@ -3354,15 +4098,23 @@ def cmd_transcribe(
                 )
 
                 for activity in opencast_acts:
+                    if limit is not None and processed >= limit:
+                        break
+                    if not activity.get("view_url"):
+                        failures.append({"key": activity["cmid"], "stage": "discovery",
+                                         "reason": "missing_view_url", "title": activity.get("name")})
+                        continue
                     view_url = _normalize_absolute_url(activity["view_url"])
-                    found = recordings.discover_recordings(
-                        session,
-                        view_url,
-                        cmid=activity["cmid"],
-                        course_id=course_id,
-                        course_shortname=shortname,
-                        course_name=course_obj["name"],
-                    )
+                    try:
+                        found = recordings.discover_recordings(
+                            session, view_url, cmid=activity["cmid"], course_id=course_id,
+                            course_shortname=shortname, course_name=course_obj["name"],
+                            failures=failures,
+                        )
+                    except Exception as exc:
+                        failures.append({"key": activity["cmid"], "stage": "discovery",
+                                         "reason": str(exc), "title": activity.get("name")})
+                        continue
                     if not found:
                         log.warning(
                             "Keine Aufzeichnung für cmid=%s (%s) gefunden.",
@@ -3370,10 +4122,12 @@ def cmd_transcribe(
                         )
                         continue
 
+                    matched += len(found)
+
                     for rec in found:
                         if limit is not None and processed >= limit:
                             log.info("Limit %d erreicht – beende Lauf.", limit)
-                            return
+                            break
                         result = _process_recording(
                             conn, session, rec,
                             course_page_id=course_page_id,
@@ -3387,15 +4141,13 @@ def cmd_transcribe(
                             failures.append(result)
         finally:
             conn.close()
+    except Exception as exc:
+        failures.append({"key": cmid or course or "courses", "stage": "source",
+                         "reason": str(exc), "title": course or cmid})
     finally:
         lock.close()
 
-    print("\n" + "=" * 60)
-    print(f"✓ Transkription: {processed} Aufzeichnung(en) verarbeitet, {len(failures)} Fehler.")
-    print("=" * 60)
-    _notify_transcribe_failures(failures)
-    if failures:
-        sys.exit(2)
+    _finish_transcribe(processed, failures, matched=matched, targeted=bool(cmid or course))
 
 
 def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, modules, shutil_mod):
@@ -3410,6 +4162,7 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
 
     downloader, manifest, notion_blocks, transcriber = modules
 
+    manifest.init_recovery_schema(conn)
     key = manifest.recording_key(rec.cmid, manifest.discriminator_for(rec))
     manifest.upsert_pending(conn, rec, key)
     prior = manifest.get(conn, key) or {}
@@ -3423,7 +4176,8 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
             return "skipped"
         if status == "failed" and (prior.get("attempts") or 0) >= TRANSCRIBE_MAX_ATTEMPTS:
             log.warning("Übersprungen (max. Versuche erreicht): %s", key)
-            return "skipped"
+            return {"key": key, "stage": prior.get("failure_stage"),
+                    "reason": "max_attempts_reached", "title": rec.title}
 
     if not manifest.claim(conn, key):
         # Bereits in Arbeit (claimed) oder von anderem Lauf erledigt.
@@ -3434,25 +4188,56 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1)+2) Acquisition: Transkript-Segmente beschaffen (quellspezifisch).
-        if rec.source_kind == "youtube":
-            # YouTube: Untertitel zuerst (cookie-frei), nur sonst Audio + Whisper.
-            stage = "subtitles"
-            segments = downloader.fetch_youtube_subtitles(
-                rec, work_dir, langs=_youtube_subtitle_langs()
-            )
-            if segments:
-                # Untertitel vorhanden → Download/Audio/Whisper komplett übersprungen.
-                model_label = "youtube-subs"
-                duration = segments[-1].end if segments else None
-                manifest.set_status(
-                    conn, key, "transcribed",
-                    model=model_label, duration_seconds=duration,
+        replacement = json.loads(prior.get("replacement_body_json") or "null")
+        cached_blocks = prior.get("generated_blocks_json")
+        if replacement and not force and not dry_run:
+            blocks = replacement["blocks"]
+            body_hash = replacement["body_hash"]
+            model_label = prior.get("model")
+            duration = prior.get("duration_seconds")
+        elif cached_blocks and prior.get("body_sha256") and not force and not dry_run:
+            blocks = json.loads(cached_blocks)
+            body_hash = prior["body_sha256"]
+            model_label = prior.get("model")
+            duration = prior.get("duration_seconds")
+        else:
+            # 1)+2) Acquisition: Transkript-Segmente beschaffen (quellspezifisch).
+            if rec.source_kind == "youtube":
+                # YouTube: Untertitel zuerst (cookie-frei), nur sonst Audio + Whisper.
+                stage = "subtitles"
+                segments = downloader.fetch_youtube_subtitles(
+                    rec, work_dir, langs=_youtube_subtitle_langs()
                 )
+                if segments:
+                    # Untertitel vorhanden → Download/Audio/Whisper komplett übersprungen.
+                    model_label = "youtube-subs"
+                    duration = segments[-1].end if segments else None
+                    manifest.set_status(
+                        conn, key, "transcribed",
+                        model=model_label, duration_seconds=duration,
+                    )
+                else:
+                    # Kein brauchbarer Untertitel → genau ein Audio-/Whisper-Fallback.
+                    stage = "download"
+                    media_path = downloader.download_youtube_audio(rec, work_dir)
+                    audio_path = downloader.extract_audio(media_path, work_dir)
+                    duration = downloader.probe_duration(media_path)
+                    manifest.set_status(
+                        conn, key, "downloaded",
+                        media_path=str(media_path), audio_path=str(audio_path),
+                        duration_seconds=duration,
+                    )
+                    stage = "transcribe"
+                    segments, model_label = transcriber.transcribe(
+                        audio_path, language=WHISPER_LANGUAGE, model=WHISPER_MODEL,
+                    )
+                    if not segments:
+                        raise RuntimeError("empty_transcript")
+                    manifest.set_status(conn, key, "transcribed", model=model_label)
             else:
-                # Kein brauchbarer Untertitel → genau ein Audio-/Whisper-Fallback.
+                # 1) Download + Audio-Extraktion (Opencast, unverändert)
                 stage = "download"
-                media_path = downloader.download_youtube_audio(rec, work_dir)
+                media_path = downloader.download_media(session, rec, work_dir)
                 audio_path = downloader.extract_audio(media_path, work_dir)
                 duration = downloader.probe_duration(media_path)
                 manifest.set_status(
@@ -3460,6 +4245,8 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
                     media_path=str(media_path), audio_path=str(audio_path),
                     duration_seconds=duration,
                 )
+
+                # 2) Transkription (On-Device-Whisper)
                 stage = "transcribe"
                 segments, model_label = transcriber.transcribe(
                     audio_path, language=WHISPER_LANGUAGE, model=WHISPER_MODEL,
@@ -3467,32 +4254,12 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
                 if not segments:
                     raise RuntimeError("empty_transcript")
                 manifest.set_status(conn, key, "transcribed", model=model_label)
-        else:
-            # 1) Download + Audio-Extraktion (Opencast, unverändert)
-            stage = "download"
-            media_path = downloader.download_media(session, rec, work_dir)
-            audio_path = downloader.extract_audio(media_path, work_dir)
-            duration = downloader.probe_duration(media_path)
-            manifest.set_status(
-                conn, key, "downloaded",
-                media_path=str(media_path), audio_path=str(audio_path),
-                duration_seconds=duration,
-            )
 
-            # 2) Transkription (On-Device-Whisper)
-            stage = "transcribe"
-            segments, model_label = transcriber.transcribe(
-                audio_path, language=WHISPER_LANGUAGE, model=WHISPER_MODEL,
-            )
-            if not segments:
-                raise RuntimeError("empty_transcript")
-            manifest.set_status(conn, key, "transcribed", model=model_label)
-
-        # 3) Notion-Blöcke + Body-Hash
-        blocks = notion_blocks.build_transcript_blocks(segments, with_timestamps=True)
-        body_hash = hashlib.sha256(
-            "\n".join(f"{s.start:.2f}|{s.text}" for s in segments).encode("utf-8")
-        ).hexdigest()
+            # 3) Notion-Blöcke + Body-Hash
+            blocks = notion_blocks.build_transcript_blocks(segments, with_timestamps=True)
+            body_hash = hashlib.sha256(
+                "\n".join(f"{s.start:.2f}|{s.text}" for s in segments).encode("utf-8")
+            ).hexdigest()
 
         if dry_run:
             log.info(
@@ -3503,6 +4270,14 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
             # bei direktem Aufruf mit einer externen Connection wiederholbar.
             manifest.reset_for_force(conn, key)
             return "processed"
+
+        # Vor Remote-Anlage checkpointen; Force behält den bisherigen Eigentumsbeleg.
+        if not prior.get("body_sha256") and not prior.get("meeting_page_id"):
+            manifest.set_status(
+                conn, key, "transcribed", body_sha256=body_hash,
+                generated_blocks_json=json.dumps(blocks, ensure_ascii=False),
+                total_block_count=len(blocks),
+            )
 
         # 4) create-or-find: schlanker Inhalts-Eintrag in Learnweb Inhalte
         stage = "inhalt"
@@ -3527,27 +4302,22 @@ def _process_recording(conn, session, rec, *, course_page_id, force, dry_run, mo
             meeting_page_id=meeting_id, total_block_count=len(blocks),
         )
 
-        # 6) Body anhängen (resume-fähig). Bei geändertem Text/--force: Body leeren.
+        # 6) Remote-Body statt bloßem lokalen Zähler als Append-Checkpoint nutzen.
         stage = "append"
-        prior_hash = prior.get("body_sha256")
-        prior_appended = prior.get("appended_block_count") or 0
-        if force or (prior_hash and prior_hash != body_hash):
-            if prior_appended > 0:
-                _notion_clear_page_children(meeting_id)
-            appended = 0
-        elif prior_hash == body_hash:
-            appended = prior_appended
-        else:
-            appended = 0
-        manifest.set_status(
-            conn, key, "appending",
-            body_sha256=body_hash, appended_block_count=appended,
+        appended = _reconcile_recording_body(
+            conn, key, meeting_id, prior, blocks, body_hash,
+            force=force, manifest=manifest,
         )
         for start in range(appended, len(blocks), MAX_NOTION_BLOCKS_PER_REQUEST):
             batch = blocks[start:start + MAX_NOTION_BLOCKS_PER_REQUEST]
             notion_append_page_children(meeting_id, batch)
-            appended = min(start + MAX_NOTION_BLOCKS_PER_REQUEST, len(blocks))
-            manifest.set_status(conn, key, "appending", appended_block_count=appended)
+            checkpoint = manifest.get(conn, key)
+            appended = _reconcile_recording_body(
+                conn, key, meeting_id, checkpoint, blocks, body_hash,
+                force=False, manifest=manifest,
+            )
+            if appended != min(start + len(batch), len(blocks)):
+                raise RuntimeError("recording_append_not_confirmed")
 
         manifest.set_status(conn, key, "done")
         log.info("✓ Transkribiert: %s (%s)", rec.title, key)

@@ -1,4 +1,7 @@
+import copy
+import hashlib
 import io
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -49,7 +52,12 @@ class FakeHttpResponse:
         return None
 
 
-def make_course_page(shortname: str) -> BeautifulSoup:
+def make_course_page(shortname: str, activities=()) -> BeautifulSoup:
+    activity_html = "".join(
+        f'<li data-for="cmitem" data-id="{activity["cmid"]}" '
+        f'class="activity modtype_{activity["modtype"]}"></li>'
+        for activity in activities
+    )
     html = f"""
     <html>
       <body>
@@ -57,10 +65,52 @@ def make_course_page(shortname: str) -> BeautifulSoup:
           <li>Dashboard</li>
           <li>{shortname}</li>
         </ol>
+        <li class="course-section" data-sectionname="General">
+          <ul data-for="cmlist">{activity_html}</ul>
+        </li>
       </body>
     </html>
     """
     return BeautifulSoup(html, "html.parser")
+
+
+def make_lw_content_page(page_id="folder-page", *, cmid="folder-1", files=()):
+    return {
+        "id": page_id,
+        "parent": {"database_id": "lw-db"},
+        "properties": {
+            "Nr": {"rich_text": [{"plain_text": cmid}]},
+            "Kurs-ID": {"rich_text": [{"plain_text": "1"}]},
+            "KurseLearnWeb": {"relation": [{"id": "course-page"}]},
+            "LW Download": {"files": copy.deepcopy(list(files))},
+        },
+    }
+
+
+class FolderNotionFixture:
+    """One content page; real identity checks and per-file patches stay in the test."""
+
+    def __init__(self, page=None):
+        self.page = copy.deepcopy(page)
+        self.writes = []
+
+    def request(self, method, url, **kwargs):
+        if method == "POST" and url.endswith("/databases/lw-db/query"):
+            return FakeResponse({"results": [copy.deepcopy(self.page)] if self.page else [], "has_more": False})
+        if method == "POST" and url.endswith("/pages"):
+            if self.page:
+                raise AssertionError("Duplicate content page")
+            self.page = {"id": "folder-page", **copy.deepcopy(kwargs["json"])}
+        elif method == "GET" and url.endswith("/pages/folder-page"):
+            if not self.page:
+                raise AssertionError("GET before page creation")
+            return FakeResponse(copy.deepcopy(self.page))
+        elif method == "PATCH" and url.endswith("/pages/folder-page"):
+            self.page["properties"].update(copy.deepcopy(kwargs["json"]["properties"]))
+        else:
+            raise AssertionError(f"Unexpected Notion request: {method} {url}")
+        self.writes.append((method, url, copy.deepcopy(kwargs["json"])))
+        return FakeResponse(copy.deepcopy(self.page))
 
 
 def make_notion_page(title: str, url: str | None, sync_content: bool = False, page_id: str = "page-1"):
@@ -808,7 +858,7 @@ class LearnwebSyncTests(unittest.TestCase):
             db_path = Path(tmpdir) / "state.db"
             with (
                 mock.patch.object(lws, "DB_PATH", db_path),
-                mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Fresh Shortname")) as load_page,
+                mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Fresh Shortname", [activity])) as load_page,
                 mock.patch.object(lws, "_extract_activities", return_value=[activity]),
             ):
                 result = lws.cmd_scan(session=mock.Mock(), course_map=course_map)
@@ -825,6 +875,7 @@ class LearnwebSyncTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(result["tracked_only_courses"], [])
+        self.assertEqual(result["errors"], [])
         self.assertEqual(row, ("cm-1", "Fresh_Shortname"))
 
     def test_cmd_scan_marks_missing_activities_as_removed(self):
@@ -878,10 +929,10 @@ class LearnwebSyncTests(unittest.TestCase):
                     conn.close()
 
                 with (
-                    mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Course 1")),
+                    mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Course 1", [live_activity])),
                     mock.patch.object(lws, "_extract_activities", return_value=[live_activity]),
                 ):
-                    lws.cmd_scan(session=mock.Mock(), course_map=course_map)
+                    result = lws.cmd_scan(session=mock.Mock(), course_map=course_map)
 
             conn = sqlite3.connect(db_path)
             try:
@@ -893,6 +944,7 @@ class LearnwebSyncTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(row, ("removed",))
+        self.assertEqual(result["errors"], [])
 
     def test_cmd_scan_persists_restricted_activity_as_deferred(self):
         course_map = {
@@ -915,7 +967,7 @@ class LearnwebSyncTests(unittest.TestCase):
             db_path = Path(tmpdir) / "state.db"
             with mock.patch.object(lws, "DB_PATH", db_path):
                 with (
-                    mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Course 1")),
+                    mock.patch.object(lws, "_load_course_page", return_value=make_course_page("Course 1", [restricted_activity])),
                     mock.patch.object(lws, "_extract_activities", return_value=[restricted_activity]),
                 ):
                     result = lws.cmd_scan(session=mock.Mock(), course_map=course_map)
@@ -933,6 +985,7 @@ class LearnwebSyncTests(unittest.TestCase):
                     conn.close()
 
         self.assertEqual(result["total_new"], 1)
+        self.assertEqual(result["errors"], [])
         self.assertEqual(
             row,
             (
@@ -943,6 +996,37 @@ class LearnwebSyncTests(unittest.TestCase):
                 None,
             ),
         )
+
+    def test_cmd_scan_removes_only_from_valid_complete_inventory(self):
+        course_map = {"1": {
+            "name": "Course 1", "shortname": "Course_1", "notion_page_id": "course-page",
+            "sync_content": True, "url": "https://example.com/course/view.php?id=1",
+        }}
+        old_activity = make_activity()
+        cases = [
+            ("login page", BeautifulSoup('<form id="login"><input type="password"></form>', "html.parser"), "new", True),
+            ("error page", BeautifulSoup('<div class="errorbox">Course unavailable</div>', "html.parser"), "new", True),
+            ("incomplete parsing", make_course_page("Course 1", [old_activity]), "new", True),
+            ("valid empty course", make_course_page("Course 1"), "removed", False),
+        ]
+        for name, soup, expected_status, has_error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                with mock.patch.object(lws, "DB_PATH", Path(tmpdir) / "state.db"):
+                    conn = lws.init_db()
+                    try:
+                        lws.upsert_activity(conn, old_activity)
+                        conn.commit()
+                        with (
+                            mock.patch.object(lws, "_load_course_page", return_value=soup),
+                            mock.patch.object(lws, "_extract_activities", return_value=[]),
+                        ):
+                            result = lws.cmd_scan(session=mock.Mock(), course_map=copy.deepcopy(course_map))
+                        row = conn.execute("SELECT status FROM resources WHERE cmid = ?", ("cm-1",)).fetchone()
+                    finally:
+                        conn.close()
+                self.assertEqual(row, (expected_status,))
+                self.assertEqual(bool(result["errors"]), has_error)
+                self.assertEqual(result["total_new"], 0)
 
     def test_upsert_activity_updates_existing_metadata(self):
         activity = {
@@ -1692,11 +1776,12 @@ class LearnwebSyncTests(unittest.TestCase):
             db_path = Path(tmpdir) / "state.db"
             with (
                 mock.patch.object(lws, "DB_PATH", db_path),
-                mock.patch.object(lws, "_load_course_page", return_value=make_course_page("AFW-2026_1")),
+                mock.patch.object(lws, "_load_course_page", return_value=make_course_page("AFW-2026_1", activities)),
                 mock.patch.object(lws, "_extract_activities", return_value=activities),
             ):
                 result = lws.cmd_scan(session=mock.Mock(), course_map=course_map)
 
+        self.assertEqual(result["errors"], [])
         self.assertEqual(
             result["tracked_only_courses"],
             [
@@ -1786,10 +1871,10 @@ class LearnwebSyncTests(unittest.TestCase):
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
                     mock.patch.object(lws, "_download_resource", return_value=make_resource_file_result()),
-                    mock.patch.object(lws, "notion_upload_file", return_value=None),
+                    mock.patch.object(lws, "notion_upload_file", return_value="upload-1") as upload_file,
                     mock.patch.object(lws, "notion_create_lw_page", side_effect=fake_create_lw_page),
                 ):
-                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    result = lws.cmd_push(session=mock.Mock(), course_map=course_map)
 
             conn = sqlite3.connect(db_path)
             try:
@@ -1800,6 +1885,9 @@ class LearnwebSyncTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(len(captured_resources), 1)
+        self.assertEqual(result["errors"], [])
+        upload_file.assert_called_once_with(b"pdf-bytes", "file.pdf")
+        self.assertEqual(captured_resources[0][1], "upload-1")
         self.assertEqual(captured_resources[0][0]["course_shortname"], "DB_Shortname")
         self.assertEqual(captured_resources[0][2], "page-1")
         self.assertEqual(synced_rows, [("1", "notion-page")])
@@ -2146,12 +2234,7 @@ class LearnwebSyncTests(unittest.TestCase):
                 finally:
                     conn.close()
 
-                captured_calls = []
-
-                def fake_create_lw_page(resource, upload_ids, course_page_id):
-                    captured_calls.append((resource, upload_ids, course_page_id))
-                    return "folder-page"
-
+                notion = FolderNotionFixture()
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
@@ -2162,28 +2245,44 @@ class LearnwebSyncTests(unittest.TestCase):
                         "_download_file_url",
                         side_effect=[(b"alpha", "Alpha.pdf"), (b"beta", "Beta.pdf")],
                     ),
-                    mock.patch.object(lws, "notion_upload_file", side_effect=["upload-1", "upload-2"]),
-                    mock.patch.object(lws, "notion_create_lw_page", side_effect=fake_create_lw_page),
+                    mock.patch.object(lws, "notion_upload_file", side_effect=["upload-1", "upload-2"]) as upload_file,
+                    mock.patch.object(lws, "_notion_request", side_effect=notion.request),
+                    mock.patch.object(lws, "notion_create_lw_page", wraps=lws.notion_create_lw_page) as create_page,
                 ):
-                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    result = lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    writes_before_repeat = copy.deepcopy(notion.writes)
+                    repeat = lws.cmd_push(session=mock.Mock(), course_map=course_map)
 
             conn = sqlite3.connect(db_path)
             try:
                 row = conn.execute(
-                    "SELECT notion_id, file_hash, file_name, status FROM resources WHERE cmid = ?",
+                    "SELECT notion_id, file_hash, file_name, status, attachment_state FROM resources WHERE cmid = ?",
                     ("folder-1",),
                 ).fetchone()
             finally:
                 conn.close()
 
-        self.assertEqual(len(captured_calls), 1)
-        self.assertEqual(captured_calls[0][0]["display_name"], "Week 1 — Literatur")
-        self.assertEqual(captured_calls[0][1], ["upload-1", "upload-2"])
-        self.assertEqual(captured_calls[0][2], "course-page")
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(repeat["errors"], [])
+        self.assertEqual(repeat["counters"]["skipped"], 1)
+        create_page.assert_called_once()
+        self.assertEqual(create_page.call_args.args[0]["display_name"], "Week 1 — Literatur")
+        self.assertEqual(create_page.call_args.args[2], "course-page")
+        self.assertEqual(notion.writes, writes_before_repeat)
+        self.assertEqual(notion.page["properties"]["LW Download"]["files"], [
+            {"name": "Alpha.pdf", "type": "file_upload", "file_upload": {"id": "upload-1"}},
+            {"name": "Beta.pdf", "type": "file_upload", "file_upload": {"id": "upload-2"}},
+        ])
+        self.assertEqual(notion.page["properties"]["KurseLearnWeb"], {"relation": [{"id": "course-page"}]})
+        self.assertEqual(upload_file.call_args_list, [mock.call(b"alpha", "Alpha.pdf"), mock.call(b"beta", "Beta.pdf")])
         self.assertEqual(row[0], "folder-page")
         self.assertEqual(row[1], lws._folder_fingerprint(folder_files))
         self.assertEqual(row[2], '["Alpha.pdf", "Beta.pdf"]')
         self.assertEqual(row[3], "synced")
+        self.assertEqual(json.loads(row[4]), {
+            folder_files[0][1]: {"name": "Alpha.pdf", "hash": hashlib.md5(b"alpha").hexdigest()},
+            folder_files[1][1]: {"name": "Beta.pdf", "hash": hashlib.md5(b"beta").hexdigest()},
+        })
 
     def test_cmd_push_updates_existing_folder_page_when_fingerprint_changes(self):
         course_map = {
@@ -2232,6 +2331,11 @@ class LearnwebSyncTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+                manual_file = {"name": "Private notes.txt", "type": "external", "external": {"url": "https://example.com/manual.txt"}}
+                original_page = make_lw_content_page(files=[manual_file])
+                original_page["properties"]["Name"] = {"title": [{"plain_text": "My folder title"}]}
+                original_page["properties"]["Kurs"] = {"select": {"name": "Manual course"}}
+                notion = FolderNotionFixture(original_page)
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
@@ -2242,11 +2346,14 @@ class LearnwebSyncTests(unittest.TestCase):
                         "_download_file_url",
                         side_effect=[(b"alpha", "Alpha.pdf"), (b"beta", "Beta.pdf")],
                     ),
-                    mock.patch.object(lws, "notion_upload_file", side_effect=["upload-1", "upload-2"]),
-                    mock.patch.object(lws, "notion_update_lw_page") as update_page,
+                    mock.patch.object(lws, "notion_upload_file", side_effect=["upload-1", "upload-2"]) as upload_file,
+                    mock.patch.object(lws, "_notion_request", side_effect=notion.request),
+                    mock.patch.object(lws, "notion_update_lw_page", wraps=lws.notion_update_lw_page) as update_page,
                     mock.patch.object(lws, "notion_create_lw_page") as create_page,
                 ):
-                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    result = lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    writes_before_repeat = copy.deepcopy(notion.writes)
+                    repeat = lws.cmd_push(session=mock.Mock(), course_map=course_map)
 
             conn = sqlite3.connect(db_path)
             try:
@@ -2258,9 +2365,20 @@ class LearnwebSyncTests(unittest.TestCase):
                 conn.close()
 
         create_page.assert_not_called()
-        update_page.assert_called_once()
-        self.assertEqual(update_page.call_args.args[0], "folder-page")
-        self.assertEqual(update_page.call_args.args[2], ["upload-1", "upload-2"])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(repeat["errors"], [])
+        self.assertEqual(repeat["counters"]["skipped"], 1)
+        self.assertTrue(update_page.called)
+        self.assertTrue(all(call.args[0] == "folder-page" for call in update_page.call_args_list))
+        self.assertEqual(notion.writes, writes_before_repeat)
+        self.assertEqual(notion.page["properties"]["LW Download"]["files"], [
+            manual_file,
+            {"name": "Alpha.pdf", "type": "file_upload", "file_upload": {"id": "upload-1"}},
+            {"name": "Beta.pdf", "type": "file_upload", "file_upload": {"id": "upload-2"}},
+        ])
+        for prop in ("Name", "Kurs", "KurseLearnWeb"):
+            self.assertEqual(notion.page["properties"][prop], original_page["properties"][prop])
+        self.assertEqual(upload_file.call_args_list, [mock.call(b"alpha", "Alpha.pdf"), mock.call(b"beta", "Beta.pdf")])
         self.assertEqual(row, ("folder-page", lws._folder_fingerprint(folder_files), "synced"))
 
     def test_cmd_push_skips_unchanged_folder_page(self):
@@ -2304,21 +2422,41 @@ class LearnwebSyncTests(unittest.TestCase):
                             "synced",
                         ),
                     )
+                    conn.execute("UPDATE resources SET attachment_state = ? WHERE cmid = ?", (
+                        json.dumps({folder_files[0][1]: {"name": "Alpha.pdf", "hash": hashlib.md5(b"alpha").hexdigest()}}),
+                        "folder-1",
+                    ))
                     conn.commit()
                 finally:
                     conn.close()
 
+                attached_file = {"name": "Alpha.pdf", "type": "file_upload", "file_upload": {"id": "upload-1"}}
+                notion = FolderNotionFixture(make_lw_content_page(files=[attached_file]))
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_notion_request", side_effect=notion.request),
                     mock.patch.object(lws, "_fetch_activity_soup", return_value=BeautifulSoup("<html></html>", "html.parser")),
                     mock.patch.object(lws, "_extract_folder_files", return_value=folder_files),
                     mock.patch.object(lws, "_download_file_url", side_effect=AssertionError("unexpected download")),
                     mock.patch.object(lws, "notion_update_lw_page") as update_page,
                     mock.patch.object(lws, "notion_create_lw_page") as create_page,
                 ):
-                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    result = lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    repeat = lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                conn = sqlite3.connect(db_path)
+                try:
+                    row = conn.execute("SELECT notion_id, file_hash, status FROM resources WHERE cmid = ?", ("folder-1",)).fetchone()
+                finally:
+                    conn.close()
 
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(repeat["errors"], [])
+        self.assertEqual(result["counters"]["skipped"], 1)
+        self.assertEqual(repeat["counters"]["skipped"], 1)
+        self.assertEqual(row, ("folder-page", fingerprint, "synced"))
+        self.assertEqual(notion.page["properties"]["LW Download"]["files"], [attached_file])
+        self.assertEqual(notion.writes, [])
         create_page.assert_not_called()
         update_page.assert_not_called()
 
@@ -2366,22 +2504,25 @@ class LearnwebSyncTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+                original_page = make_lw_content_page()
+                notion = FolderNotionFixture(original_page)
                 with (
                     mock.patch.object(lws, "NOTION_TOKEN", "token"),
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
+                    mock.patch.object(lws, "_notion_request", side_effect=notion.request),
                     mock.patch.object(lws, "_fetch_activity_soup", return_value=BeautifulSoup("<html></html>", "html.parser")),
                     mock.patch.object(lws, "_extract_folder_files", return_value=folder_files),
                     mock.patch.object(lws, "_download_file_url", return_value=(b"alpha", "Alpha.pdf")),
-                    mock.patch.object(lws, "notion_upload_file", return_value=None),
+                    mock.patch.object(lws, "notion_upload_file", return_value=None) as upload_file,
                     mock.patch.object(lws, "notion_update_lw_page") as update_page,
                     mock.patch.object(lws, "notion_create_lw_page") as create_page,
                 ):
-                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    result = lws.cmd_push(session=mock.Mock(), course_map=course_map)
 
             conn = sqlite3.connect(db_path)
             try:
                 row = conn.execute(
-                    "SELECT notion_id, status FROM resources WHERE cmid = ?",
+                    "SELECT notion_id, status, failure_reason FROM resources WHERE cmid = ?",
                     ("folder-1",),
                 ).fetchone()
             finally:
@@ -2389,7 +2530,11 @@ class LearnwebSyncTests(unittest.TestCase):
 
         create_page.assert_not_called()
         update_page.assert_not_called()
-        self.assertEqual(row, ("folder-page", "error"))
+        upload_file.assert_called_once_with(b"alpha", "Alpha.pdf")
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(notion.page, original_page)
+        self.assertEqual(notion.writes, [])
+        self.assertEqual(row, ("folder-page", "error", "folder_incomplete"))
 
     def test_cmd_push_creates_url_page_with_target_url_property(self):
         course_map = {
@@ -2529,9 +2674,10 @@ class LearnwebSyncTests(unittest.TestCase):
                     mock.patch.object(lws, "_extract_url_target") as extract_url_target,
                     mock.patch.object(lws, "_fetch_activity_soup", return_value=_page_soup),
                     mock.patch.object(lws, "notion_create_lw_page", return_value="page-page") as create_page,
+                    mock.patch.object(lws, "_notion_request", return_value=FakeResponse({"results": [], "has_more": False})) as remote_body,
                     mock.patch.object(lws, "notion_append_page_children") as append_children,
                 ):
-                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    result = lws.cmd_push(session=mock.Mock(), course_map=course_map)
 
             conn = sqlite3.connect(db_path)
             try:
@@ -2556,6 +2702,10 @@ class LearnwebSyncTests(unittest.TestCase):
             None,
             "course-page",
         )
+        remote_body.assert_called_once()
+        self.assertEqual(remote_body.call_args.args, ("GET", f"{lws.NOTION_API}/blocks/page-page/children"))
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["errors"][0]["cmid"], "url-1")
         append_children.assert_called_once()
         self.assertEqual(
             rows,
@@ -2641,9 +2791,10 @@ class LearnwebSyncTests(unittest.TestCase):
                     mock.patch.object(lws, "_extract_url_target", return_value="https://external.example.com/doc"),
                     mock.patch.object(lws, "_fetch_activity_soup", return_value=_page_soup),
                     mock.patch.object(lws, "notion_create_lw_page", side_effect=fake_create_lw_page),
+                    mock.patch.object(lws, "_notion_request", return_value=FakeResponse({"results": [], "has_more": False})) as remote_body,
                     mock.patch.object(lws, "notion_append_page_children") as append_children,
                 ):
-                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    result = lws.cmd_push(session=mock.Mock(), course_map=course_map)
 
             conn = sqlite3.connect(db_path)
             try:
@@ -2653,6 +2804,10 @@ class LearnwebSyncTests(unittest.TestCase):
             finally:
                 conn.close()
 
+        remote_body.assert_called_once()
+        self.assertEqual(remote_body.call_args.args, ("GET", f"{lws.NOTION_API}/blocks/page-page/children"))
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["errors"][0]["cmid"], "url-1")
         append_children.assert_called_once()
         self.assertEqual(
             rows,
@@ -2712,9 +2867,13 @@ class LearnwebSyncTests(unittest.TestCase):
                     mock.patch.object(lws, "NOTION_LW_DB_ID", "lw-db"),
                     mock.patch.object(lws, "_fetch_activity_soup", return_value=_long_soup),
                     mock.patch.object(lws, "notion_create_lw_page", return_value="page-page"),
+                    mock.patch.object(lws, "_notion_request", return_value=FakeResponse({"results": [], "has_more": False})) as remote_body,
                     mock.patch.object(lws, "notion_append_page_children") as append_children,
                 ):
-                    lws.cmd_push(session=mock.Mock(), course_map=course_map)
+                    calls = mock.Mock()
+                    calls.attach_mock(remote_body, "read_body")
+                    calls.attach_mock(append_children, "append_body")
+                    result = lws.cmd_push(session=mock.Mock(), course_map=course_map)
 
             conn = sqlite3.connect(db_path)
             try:
@@ -2725,7 +2884,13 @@ class LearnwebSyncTests(unittest.TestCase):
             finally:
                 conn.close()
 
+        self.assertEqual(result["errors"], [])
+        remote_body.assert_called_once()
+        self.assertEqual(remote_body.call_args.args, ("GET", f"{lws.NOTION_API}/blocks/page-page/children"))
+        append_children.assert_called_once()
+        self.assertEqual([call[0] for call in calls.mock_calls], ["read_body", "append_body"])
         blocks = append_children.call_args.args[1]
+        self.assertEqual(" ".join(block["paragraph"]["rich_text"][0]["text"]["content"] for block in blocks), long_text)
         self.assertGreater(len(blocks), 1)
         self.assertTrue(all(block["type"] == "paragraph" for block in blocks))
         self.assertTrue(
@@ -2799,6 +2964,28 @@ class LearnwebSyncTests(unittest.TestCase):
         create_page.assert_not_called()
         append_children.assert_not_called()
         self.assertEqual(row, (None, "error"))
+
+    def test_append_lw_page_body_preserves_additional_manual_blocks(self):
+        generated = {"type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "Source text"}}]}}
+        manual = {"id": "manual-block", "type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "My notes"}]}}
+        children = [copy.deepcopy(generated), manual]
+        original = copy.deepcopy(children)
+        with mock.patch.object(lws, "_notion_request", return_value=FakeResponse({"results": children, "has_more": False})) as request:
+            lws._append_lw_page_body("page-page", [generated])
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args, ("GET", f"{lws.NOTION_API}/blocks/page-page/children"))
+        self.assertEqual(children, original)
+
+    def test_append_lw_page_body_refuses_mismatched_manual_prefix(self):
+        generated = {"type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "Source text"}}]}}
+        children = [{"id": "manual-block", "type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "My notes"}]}}]
+        original = copy.deepcopy(children)
+        with mock.patch.object(lws, "_notion_request", return_value=FakeResponse({"results": children, "has_more": False})) as request:
+            with self.assertRaises(RuntimeError):
+                lws._append_lw_page_body("page-page", [generated])
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args, ("GET", f"{lws.NOTION_API}/blocks/page-page/children"))
+        self.assertEqual(children, original)
 
     def test_cmd_diagnose_resource_errors_groups_results_and_stays_read_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2973,7 +3160,7 @@ class LearnwebSyncTests(unittest.TestCase):
 
         diagnose_cmd.assert_called_once_with(limit=7, include_terminal=True)
 
-    def test_cmd_run_exits_when_active_course_has_no_pushable_resources(self):
+    def test_cmd_run_warns_when_active_course_has_only_unsupported_resources(self):
         tracked_only_courses = [
             {
                 "course_id": "92533",
@@ -2987,12 +3174,16 @@ class LearnwebSyncTests(unittest.TestCase):
             mock.patch.object(lws, "login", return_value=True),
             mock.patch.object(lws, "cmd_sync_courses", return_value={}),
             mock.patch.object(lws, "cmd_scan", return_value={"tracked_only_courses": tracked_only_courses}),
-            mock.patch.object(lws, "cmd_push"),
+            mock.patch.object(lws, "cmd_push", return_value={"errors": []}) as push,
+            self.assertLogs(lws.log, level="WARNING") as logs,
         ):
-            with self.assertRaises(SystemExit) as exc:
-                lws.cmd_run()
+            result = lws.cmd_run()
 
-        self.assertEqual(exc.exception.code, 2)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["scan"]["tracked_only_courses"], tracked_only_courses)
+        self.assertEqual(result["push"]["errors"], [])
+        push.assert_called_once()
+        self.assertTrue(any("AFW-2026_1 [92533]" in message for message in logs.output))
 
     def test_get_course_activities_skips_enrolment_redirect(self):
         """

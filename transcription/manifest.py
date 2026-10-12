@@ -46,6 +46,9 @@ UPDATABLE_COLUMNS = {
     "total_block_count",
     "appended_block_count",
     "attempts",
+    "generated_blocks_json",
+    "generated_block_ids_json",
+    "replacement_body_json",
     "course_name",  # optional, nicht im Schema aber für Metadaten nützlich
 }
 
@@ -67,6 +70,27 @@ VALID_STATUSES = {
 def _now_utc_iso() -> str:
     """Liefert den aktuellen UTC-Zeitpunkt als ISO-8601-String (Z-Suffix)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def init_recovery_schema(conn: sqlite3.Connection) -> None:
+    """Additive Checkpoints: Text vor Remote-Append, IDs nach Remote-Abgleich."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(transcripts)")}
+    with conn:
+        for column in ("generated_blocks_json", "generated_block_ids_json", "replacement_body_json"):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE transcripts ADD COLUMN {column} TEXT")
+
+
+def recover_interrupted(conn: sqlite3.Connection) -> int:
+    """Nur unter exklusivem Worker-flock aufrufen; IDs/Fortschritt bleiben erhalten."""
+    with conn:
+        cursor = conn.execute(
+            """UPDATE transcripts SET status = 'pending', updated_at = ?
+               WHERE status IN ('claimed', 'downloaded', 'transcribed',
+                                'inhalt_created', 'meeting_created', 'appending')""",
+            (_now_utc_iso(),),
+        )
+    return cursor.rowcount
 
 
 def recording_key(cmid: str, discriminator: str) -> str:
@@ -258,8 +282,8 @@ def reset_for_force(conn: sqlite3.Connection, key: str) -> None:
     """Setzt einen Record auf Anfang zurück für --force-Reruns.
 
     Dies ist für Fälle, wenn ein Record fehlgeschlagen ist und der Nutzer
-    den Rerun erzwingen will: status → 'pending', Fehler gelöscht, Append-Fortschritt
-    zurückgesetzt. Die Notion page_ids bleiben erhalten, damit der Aufrufer
+    den Rerun erzwingen will: status → 'pending', Fehler gelöscht. Append-Fortschritt,
+    Eigentumsbelege und Notion page_ids bleiben bis zum Remote-Abgleich erhalten, damit der Aufrufer
     die Seite in-place ersetzen kann (keine Duplikate).
 
     Args:
@@ -274,8 +298,6 @@ def reset_for_force(conn: sqlite3.Connection, key: str) -> None:
             SET status = ?,
                 failure_stage = NULL,
                 failure_reason = NULL,
-                appended_block_count = 0,
-                body_sha256 = NULL,
                 updated_at = ?
             WHERE key = ?
             """,
