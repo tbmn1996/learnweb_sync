@@ -2756,11 +2756,6 @@ def _push_folder_activity(
             page = _repair_lw_metadata(row["notion_id"], resource, course_notion_page_id)
             remote_files = page["properties"].get("LW Download", {}).get("files", [])
             remote_names = [file.get("name") for file in remote_files]
-        if (row["notion_id"] and row["file_hash"] == fingerprint
-                and row.get("status") == "synced"
-                and all(url in state and not state[url].get("blocked")
-                        and (remote_names.count(state[url]["name"]) == 1 or sum(_is_name_match(r, state[url]["name"]) for r in remote_names) == 1) for _, url in folder_files)):
-            return {"status": "skipped", "modtype": "folder"}
     except Exception as exc:
         _mark_activity_error(conn, row["cmid"], failure_reason="remote_reconcile_failed",
                               failure_detail=_build_failure_detail(exception=exc))

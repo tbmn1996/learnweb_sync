@@ -156,6 +156,7 @@ class SyncRepairAcceptance(unittest.TestCase):
         self.addCleanup(conn.close)
         row.update(modtype="folder", section="Week", file_hash="old-inventory")
         url = "https://learnweb.invalid/pluginfile.php/own.pdf"
+        row["file_hash"] = lws._folder_fingerprint([("Own.pdf", url)])
         old_hash = hashlib.md5(b"old original").hexdigest()
         conn.execute("UPDATE resources SET attachment_state=? WHERE cmid='1'", (json.dumps({url: {"name": "Own.pdf", "hash": old_hash}}),))
         conn.commit()

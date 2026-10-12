@@ -2243,7 +2243,7 @@ class LearnwebSyncTests(unittest.TestCase):
                     mock.patch.object(
                         lws,
                         "_download_file_url",
-                        side_effect=[(b"alpha", "Alpha.pdf"), (b"beta", "Beta.pdf")],
+                        side_effect=lambda session, url: {folder_files[0][1]: (b"alpha", "Alpha.pdf"), folder_files[1][1]: (b"beta", "Beta.pdf")}[url],
                     ),
                     mock.patch.object(lws, "notion_upload_file", side_effect=["upload-1", "upload-2"]) as upload_file,
                     mock.patch.object(lws, "_notion_request", side_effect=notion.request),
@@ -2344,7 +2344,7 @@ class LearnwebSyncTests(unittest.TestCase):
                     mock.patch.object(
                         lws,
                         "_download_file_url",
-                        side_effect=[(b"alpha", "Alpha.pdf"), (b"beta", "Beta.pdf")],
+                        side_effect=lambda session, url: {folder_files[0][1]: (b"alpha", "Alpha.pdf"), folder_files[1][1]: (b"beta", "Beta.pdf")}[url],
                     ),
                     mock.patch.object(lws, "notion_upload_file", side_effect=["upload-1", "upload-2"]) as upload_file,
                     mock.patch.object(lws, "_notion_request", side_effect=notion.request),
@@ -2438,7 +2438,7 @@ class LearnwebSyncTests(unittest.TestCase):
                     mock.patch.object(lws, "_notion_request", side_effect=notion.request),
                     mock.patch.object(lws, "_fetch_activity_soup", return_value=BeautifulSoup("<html></html>", "html.parser")),
                     mock.patch.object(lws, "_extract_folder_files", return_value=folder_files),
-                    mock.patch.object(lws, "_download_file_url", side_effect=AssertionError("unexpected download")),
+                    mock.patch.object(lws, "_download_file_url", return_value=(b"alpha", "Alpha.pdf")) as download_file,
                     mock.patch.object(lws, "notion_update_lw_page") as update_page,
                     mock.patch.object(lws, "notion_create_lw_page") as create_page,
                 ):
@@ -2457,6 +2457,7 @@ class LearnwebSyncTests(unittest.TestCase):
         self.assertEqual(row, ("folder-page", fingerprint, "synced"))
         self.assertEqual(notion.page["properties"]["LW Download"]["files"], [attached_file])
         self.assertEqual(notion.writes, [])
+        self.assertEqual(download_file.call_count, 2)
         create_page.assert_not_called()
         update_page.assert_not_called()
 
